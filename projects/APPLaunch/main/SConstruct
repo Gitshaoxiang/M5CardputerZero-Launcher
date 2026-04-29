@@ -5,7 +5,7 @@ with open(env['PROJECT_TOOL_S']) as f:
     exec(f.read())
 
 SRCS = Glob('src/*.c*')
-INCLUDE = [ADir('.'), ADir('include')]
+INCLUDE = [ADir('.'), ADir('include'), ADir('../third_party/RadioLib/src')]
 PRIVATE_INCLUDE = []
 REQUIREMENTS = ['lvgl_component', 'pthread', 'input', 'xkbcommon', 'udev']
 STATIC_LIB = []

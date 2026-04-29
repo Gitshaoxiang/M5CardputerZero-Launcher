@@ -10,9 +10,7 @@
 #include <linux/input.h>
 #include <cstring>
 // #include "ui/inter_process_comms.h"
-
-
-
+#include "ui/components/ui_app_lora.hpp"
 
 static const char *getenv_default(const char *name, const char *dflt)
 {
