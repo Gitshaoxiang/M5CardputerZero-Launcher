@@ -22,6 +22,7 @@
 #include "ui_app_tank_battle.hpp"
 #include "ui_app_racing.hpp"
 #include "ui_app_hikepod.hpp"
+#include "ui_app_page.hpp"
 
 // 前向声明
 class app_launch_S;
@@ -93,7 +94,7 @@ public:
 
         app_list.emplace_back("HIKEPOD", "A:/dist/images/hack.png", page_v<UIHikePodPage>);
 
-        app_list.emplace_back("LORA", "A:/dist/images/lora.png", page_v<app_lora>);
+        app_list.emplace_back("LORA", "A:/dist/images/mesh.png", page_v<app_lora>);
     }
 
     void launch_app()
@@ -282,22 +283,17 @@ app::app(std::string name, std::string icon, page_t<PageT> /*tag*/) : Name(std::
     };
 }
 
-// C风格 lora 页面特化
-namespace {
-static app_launch_S *g_lora_app_launch_self = nullptr;
-static void lora_go_back_home_static()
-{
-    if (g_lora_app_launch_self) g_lora_app_launch_self->go_back_home();
-}
-}  // namespace
+// LoRa 页面特化：需要先构造 app_lora，再设置 go_back 回调
 template <>
 app::app(std::string name, std::string icon, page_t<app_lora> /*tag*/) : Name(std::move(name)), Icon(std::move(icon))
 {
     launch = [](app_launch_S *self) {
-        g_lora_app_launch_self = self;
-        lora_set_go_back_home(lora_go_back_home_static);
-        ui_app_lora_create(lv_scr_act());
-        self->app_Page = nullptr;
+        auto p         = std::make_shared<app_lora>();
+        self->app_Page = p;
+        lv_disp_load_scr(p->get_ui());
+        lv_indev_set_group(lv_indev_get_next(NULL), p->get_key_group());
+        p->go_back_home = std::bind(&app_launch_S::go_back_home, self);
+        ui_app_lora_set_go_back(p->go_back_home);
     };
 }
 

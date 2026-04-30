@@ -338,6 +338,10 @@ class app_lora : public app_base {
 public:
     app_lora() : app_base()
     {
-        ui_app_lora_create(ui_APP_Container);
+        ui_app_lora_create(ui_APP_Container, ui_root);
+    }
+    ~app_lora()
+    {
+        ui_app_lora_destroy();
     }
 };
