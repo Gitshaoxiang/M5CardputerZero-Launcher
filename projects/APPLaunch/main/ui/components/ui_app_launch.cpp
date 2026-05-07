@@ -22,6 +22,7 @@
 #include "ui_app_tank_battle.hpp"
 #include "ui_app_racing.hpp"
 #include "ui_app_hikepod.hpp"
+#include "ui_app_gallery.hpp"
 #include "ui_app_page.hpp"
 
 // 前向声明
@@ -95,6 +96,8 @@ public:
         app_list.emplace_back("HIKEPOD", "A:/dist/images/hack.png", page_v<UIHikePodPage>);
 
         app_list.emplace_back("LORA", "A:/dist/images/mesh.png", page_v<app_lora>);
+
+        app_list.emplace_back("GALLERY", "A:/dist/images/camera.png", page_v<UIGalleryPage>);
     }
 
     void launch_app()
