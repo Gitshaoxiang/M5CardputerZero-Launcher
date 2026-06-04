@@ -31,10 +31,6 @@ if 'CONFIG_V9_5_LV_USE_SDL' in os.environ:
 lvgl_component['REQUIREMENTS'] += ['freetype']
 lvgl_component['INCLUDE'] += ['/usr/include/freetype2', '/usr/include/libpng16']
 
-for src in lvgl_component['SRCS']:
-    if 'lv_sdl_keyboard.c' in str(src):
-        lvgl_component['SRCS'].remove(src)
-
 
 # screen_srcs = append_srcs_dir(ADir('ui/screens'))
 # for src in screen_srcs:
