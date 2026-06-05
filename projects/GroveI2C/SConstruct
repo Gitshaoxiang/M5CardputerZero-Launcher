@@ -2,8 +2,13 @@ from pathlib import Path
 import os
 import platform
 import subprocess
+import shutil
+import sys
 
 arch = platform.machine()
+version = "v0.0.1"
+static_lib = "static_lib"
+update = False
 
 # export CardputerZero=y for cross-compiling to CardputerZero
 if "CardputerZero" in os.environ:
@@ -15,6 +20,7 @@ if "CardputerZero" in os.environ:
             f.write("CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n")
             f.write("CONFIG_V9_5_LV_USE_EVDEV=y\n")
             f.write('CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"\n')
+            f.write(f'''CONFIG_TOOLCHAIN_SYSROOT="{os.path.join(sys.path[0], static_lib)}"\n''')
 
 # non-aarch64: SDL simulator
 elif arch != "aarch64":
@@ -50,3 +56,26 @@ env = SConscript(
     variant_dir=os.getcwd(),
     duplicate=0,
 )
+
+if "CardputerZero" in os.environ:
+    if not os.path.exists(static_lib):
+        update = True
+    else:
+        try:
+            with open(str(Path(static_lib) / "version"), "r") as f:
+                if version != f.read().strip():
+                    update = True
+        except Exception:
+            update = True
+
+    if update:
+        with open(env["PROJECT_TOOL_S"]) as f:
+            exec(f.read())
+        down_url = (
+            "https://github.com/dianjixz/M5CardputerZero-UserDemo/"
+            "releases/download/{}/sdk_bsp.tar.gz"
+        ).format(version)
+        down_path = check_wget_down(down_url, "static_lib_{}.tar.gz".format(version))
+        if os.path.exists(static_lib):
+            shutil.rmtree(static_lib)
+        shutil.move(down_path, static_lib)

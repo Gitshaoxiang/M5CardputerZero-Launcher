@@ -11,9 +11,6 @@
 
 namespace {
 
-static lv_obj_t *g_border_runner_main = nullptr;
-static lv_obj_t *g_border_runner_carry = nullptr;
-static lv_obj_t *g_border_frame = nullptr;
 static lv_obj_t *g_cells[128] = {};
 static lv_timer_t *g_ui_timer = nullptr;
 static lv_group_t *g_group = nullptr;
@@ -21,179 +18,59 @@ static std::atomic<bool> g_scanning{false};
 static std::atomic<bool> g_scan_ready{false};
 static std::mutex g_scan_mutex;
 static std::array<bool, 128> g_found{};
-static int g_border_step = 0;
+static lv_obj_t *g_top_fx = nullptr;
+static int g_top_fx_step = 0;
+static int g_scan_elapsed_ms = 0;
 static int g_screen_w = 320;
 static int g_screen_h = 170;
 
 static constexpr int kAddrCols = 16;
-static constexpr int kGridPad = 6;
+static constexpr int kGridPad = 3;
 static constexpr int kGridGap = 2;
-static constexpr int kCellH = 12;
-
-static void set_runner_rect(int step, int segment, int thickness)
+static constexpr int kGridCellW = 18;
+static constexpr int kCellH = 11;
+static constexpr int kScanIntervalMs = 2000;
+ 
+static void update_top_fx()
 {
-    if (g_border_runner_main == nullptr || g_border_runner_carry == nullptr)
+    if (g_top_fx == nullptr)
     {
         return;
     }
 
-    const int margin = 3;
-    const int inner_w = g_screen_w - margin * 2;
-    const int inner_h = g_screen_h - margin * 2;
-    const int top_len = inner_w - 1;
-    const int right_len = inner_h - 1;
-    const int bottom_len = inner_w - 1;
-    const int left_len = inner_h - 1;
-    const int perimeter = top_len + right_len + bottom_len + left_len;
+    const int y = 5;
+    const int speed = 4;
+    const int lead_len = 48;
+    const int bar_h = 6;
+    const int top_margin = 8;
+    const int loop_span = (g_screen_w - top_margin * 2) + lead_len;
 
-    int p = step % perimeter;
-    if (p < 0)
-    {
-        p += perimeter;
-    }
+    g_top_fx_step = (g_top_fx_step + speed) % loop_span;
 
-    int edge = 0;
-    int edge_start = 0;
-    int edge_len = top_len;
-    if (p < top_len)
+    const int right_limit = g_screen_w - top_margin;
+    int x = top_margin - lead_len + g_top_fx_step;
+    int w = lead_len;
+
+    if (x < top_margin)
     {
-        edge = 0;
-        edge_start = 0;
-        edge_len = top_len;
-    }
-    else if (p < top_len + right_len)
-    {
-        edge = 1;
-        edge_start = top_len;
-        edge_len = right_len;
-    }
-    else if (p < top_len + right_len + bottom_len)
-    {
-        edge = 2;
-        edge_start = top_len + right_len;
-        edge_len = bottom_len;
-    }
-    else
-    {
-        edge = 3;
-        edge_start = top_len + right_len + bottom_len;
-        edge_len = left_len;
+        w -= (top_margin - x);
+        x = top_margin;
     }
 
-    int dist_on_edge = p - edge_start;
-    int main_len = dist_on_edge + 1;
-    if (main_len > segment)
+    if (x + w > right_limit)
     {
-        main_len = segment;
-    }
-    int carry_len = segment - main_len;
-    if (carry_len < 0)
-    {
-        carry_len = 0;
+        w = right_limit - x;
     }
 
-    int x = margin;
-    int y = margin;
-    int w = thickness;
-    int h = thickness;
-
-    if (edge == 0)
+    if (w < 2)
     {
-        int head_x = margin + dist_on_edge;
-        x = head_x - main_len + 1;
-        y = margin;
-        w = main_len;
-        h = thickness;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_main, LV_GRAD_DIR_HOR, 0);
-        lv_obj_set_style_bg_color(g_border_runner_main, lv_color_hex(0x3F8FC1), 0);
-        lv_obj_set_style_bg_grad_color(g_border_runner_main, lv_color_hex(0xA9EBFF), 0);
-    }
-    else if (edge == 1)
-    {
-        int head_y = margin + dist_on_edge;
-        x = margin + inner_w - 1;
-        y = head_y - main_len + 1;
-        w = thickness;
-        h = main_len;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_main, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_bg_color(g_border_runner_main, lv_color_hex(0x3F8FC1), 0);
-        lv_obj_set_style_bg_grad_color(g_border_runner_main, lv_color_hex(0xA9EBFF), 0);
-    }
-    else if (edge == 2)
-    {
-        int head_x = margin + inner_w - 1 - dist_on_edge;
-        x = head_x;
-        y = margin + inner_h - 1;
-        w = main_len;
-        h = thickness;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_main, LV_GRAD_DIR_HOR, 0);
-        lv_obj_set_style_bg_color(g_border_runner_main, lv_color_hex(0xA9EBFF), 0);
-        lv_obj_set_style_bg_grad_color(g_border_runner_main, lv_color_hex(0x3F8FC1), 0);
-    }
-    else
-    {
-        int head_y = margin + inner_h - 1 - dist_on_edge;
-        x = margin;
-        y = head_y;
-        w = thickness;
-        h = main_len;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_main, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_bg_color(g_border_runner_main, lv_color_hex(0xA9EBFF), 0);
-        lv_obj_set_style_bg_grad_color(g_border_runner_main, lv_color_hex(0x3F8FC1), 0);
-    }
-
-    lv_obj_set_pos(g_border_runner_main, x, y);
-    lv_obj_set_size(g_border_runner_main, w > 1 ? w : 2, h > 1 ? h : 2);
-
-    if (carry_len <= 0)
-    {
-        lv_obj_add_flag(g_border_runner_carry, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(g_top_fx, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
-    lv_obj_clear_flag(g_border_runner_carry, LV_OBJ_FLAG_HIDDEN);
-    int cx = margin;
-    int cy = margin;
-    int cw = thickness;
-    int ch = thickness;
-
-    if (edge == 0)
-    {
-        cx = margin;
-        cy = margin + inner_h - carry_len;
-        cw = thickness;
-        ch = carry_len;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_carry, LV_GRAD_DIR_VER, 0);
-    }
-    else if (edge == 1)
-    {
-        cx = margin + inner_w - carry_len;
-        cy = margin;
-        cw = carry_len;
-        ch = thickness;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_carry, LV_GRAD_DIR_HOR, 0);
-    }
-    else if (edge == 2)
-    {
-        cx = margin + inner_w - 1;
-        cy = margin + inner_h - carry_len;
-        cw = thickness;
-        ch = carry_len;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_carry, LV_GRAD_DIR_VER, 0);
-    }
-    else
-    {
-        cx = margin + inner_w - carry_len;
-        cy = margin + inner_h - 1;
-        cw = carry_len;
-        ch = thickness;
-        lv_obj_set_style_bg_grad_dir(g_border_runner_carry, LV_GRAD_DIR_HOR, 0);
-    }
-
-    lv_obj_set_style_bg_color(g_border_runner_carry, lv_color_hex(0x316F98), 0);
-    lv_obj_set_style_bg_grad_color(g_border_runner_carry, lv_color_hex(0x4A9DCC), 0);
-    lv_obj_set_pos(g_border_runner_carry, cx, cy);
-    lv_obj_set_size(g_border_runner_carry, cw > 1 ? cw : 2, ch > 1 ? ch : 2);
+    lv_obj_clear_flag(g_top_fx, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(g_top_fx, x, y);
+    lv_obj_set_size(g_top_fx, w, bar_h);
 }
 
 static std::string run_command_capture(const char *cmd)
@@ -260,6 +137,19 @@ static std::array<bool, 128> parse_i2cdetect_output(const std::string &text)
     return found;
 }
 
+static int count_found_addr(const std::array<bool, 128> &found)
+{
+    int count = 0;
+    for (bool v : found)
+    {
+        if (v)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
 static void clear_highlight()
 {
     for (int i = 0; i < 128; ++i)
@@ -300,11 +190,16 @@ static void apply_scan_result()
 
 static void scan_worker()
 {
+    printf("[GroveI2C] scan: switch power on (gpio17=1)\n");
     system("gpioset -c gpiochip0 17=1 >/dev/null 2>&1");
+    printf("[GroveI2C] scan: switch mux to I2C (gpio4=1)\n");
     system("gpioset -c gpiochip0 4=1 >/dev/null 2>&1");
+
+    printf("[GroveI2C] scan: run i2cdetect -y 1\n");
     std::string output = run_command_capture("i2cdetect -y 1 2>&1");
 
     auto found = parse_i2cdetect_output(output);
+    printf("[GroveI2C] scan: found %d device(s)\n", count_found_addr(found));
     {
         std::lock_guard<std::mutex> lock(g_scan_mutex);
         g_found = found;
@@ -321,9 +216,9 @@ static void start_scan()
         return;
     }
 
+    printf("[GroveI2C] scan: start\n");
     g_scan_ready.store(false);
     g_scanning.store(true);
-    clear_highlight();
 
     std::thread worker(scan_worker);
     worker.detach();
@@ -333,18 +228,18 @@ static void ui_tick_cb(lv_timer_t *timer)
 {
     (void)timer;
 
-    const int margin = 3;
-    const int inner_w = g_screen_w - margin * 2;
-    const int inner_h = g_screen_h - margin * 2;
-    const int perimeter = inner_w * 2 + inner_h * 2 - 4;
-    const int speed = 4;
-    g_border_step = (g_border_step + speed) % perimeter;
-
-    set_runner_rect(g_border_step, 56, 6);
+    update_top_fx();
 
     if (g_scan_ready.exchange(false))
     {
         apply_scan_result();
+    }
+
+    g_scan_elapsed_ms += 28;
+    if (g_scan_elapsed_ms >= kScanIntervalMs)
+    {
+        g_scan_elapsed_ms = 0;
+        start_scan();
     }
 }
 
@@ -370,6 +265,8 @@ static lv_obj_t *create_addr_cell(lv_obj_t *parent, int addr, int cell_w)
 
 void ui_init()
 {
+    printf("[GroveI2C] ui_init: setup UI and start periodic scan\n");
+
     lv_obj_t *screen = lv_screen_active();
     lv_display_t *disp = lv_display_get_default();
     if (disp != nullptr)
@@ -383,43 +280,78 @@ void ui_init()
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
 
-    g_border_frame = lv_obj_create(screen);
-    lv_obj_remove_style_all(g_border_frame);
-    lv_obj_set_size(g_border_frame, g_screen_w - 6, g_screen_h - 6);
-    lv_obj_set_pos(g_border_frame, 3, 3);
-    lv_obj_set_style_border_width(g_border_frame, 3, 0);
-    lv_obj_set_style_border_color(g_border_frame, lv_color_hex(0x3F678A), 0);
-    lv_obj_set_style_bg_opa(g_border_frame, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(g_border_frame, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(g_border_frame, LV_SCROLLBAR_MODE_OFF);
+    g_top_fx = lv_obj_create(screen);
+    lv_obj_remove_style_all(g_top_fx);
+    lv_obj_set_size(g_top_fx, 2, 6);
+    lv_obj_set_pos(g_top_fx, 8, 5);
+    lv_obj_set_style_radius(g_top_fx, 3, 0);
+    lv_obj_set_style_bg_opa(g_top_fx, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_grad_dir(g_top_fx, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_color(g_top_fx, lv_color_hex(0x2C92C7), 0);
+    lv_obj_set_style_bg_grad_color(g_top_fx, lv_color_hex(0x9FEFFF), 0);
+    lv_obj_set_style_shadow_width(g_top_fx, 10, 0);
+    lv_obj_set_style_shadow_opa(g_top_fx, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(g_top_fx, lv_color_hex(0x68D5FF), 0);
+    lv_obj_clear_flag(g_top_fx, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(g_top_fx, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_move_foreground(g_top_fx);
+    lv_obj_add_flag(g_top_fx, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *title = lv_label_create(screen);
+    const int header_top = 8;
+    const int header_h = 28;
+    lv_obj_t *header = lv_obj_create(screen);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, g_screen_w, header_h);
+    lv_obj_set_pos(header, 0, header_top);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t *title = lv_label_create(header);
     lv_label_set_text(title, "Grove I2C Scaner");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0xF1F7FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_center(title);
 
     lv_obj_t *grid = lv_obj_create(screen);
-    lv_obj_set_size(grid, g_screen_w - 22, g_screen_h - 50);
-    lv_obj_align(grid, LV_ALIGN_BOTTOM_MID, 0, -8);
+    const int header_bottom = header_top + header_h;
+    const int grid_top = header_bottom + 1;
+    const int grid_bottom_margin = 2;
+    int grid_h = g_screen_h - grid_top - grid_bottom_margin;
+    if (grid_h < 90)
+    {
+        grid_h = 90;
+    }
+    const int available_w = g_screen_w - 20;
+    const int ideal_w = kGridPad * 2 + kAddrCols * kGridCellW + (kAddrCols - 1) * kGridGap;
+    const int grid_w = ideal_w < available_w ? ideal_w : available_w;
+    lv_obj_set_size(grid, grid_w, grid_h);
+    lv_obj_set_pos(grid, (g_screen_w - grid_w) / 2, grid_top);
     lv_obj_set_style_bg_color(grid, lv_color_hex(0x101E31), 0);
     lv_obj_set_style_border_color(grid, lv_color_hex(0x37557A), 0);
     lv_obj_set_style_border_width(grid, 1, 0);
     lv_obj_set_style_radius(grid, 6, 0);
     lv_obj_set_style_pad_all(grid, kGridPad, 0);
     lv_obj_set_style_pad_column(grid, kGridGap, 0);
-    lv_obj_set_style_pad_row(grid, 3, 0);
+    lv_obj_set_style_pad_row(grid, 2, 0);
     lv_obj_set_layout(grid, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(
+        grid,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
-    int grid_w = static_cast<int>(lv_obj_get_width(grid));
     int content_w = grid_w - (kGridPad * 2);
     int cell_w = (content_w - (kAddrCols - 1) * kGridGap) / kAddrCols;
-    if (cell_w < 14)
+    if (cell_w > kGridCellW)
     {
-        cell_w = 14;
+        cell_w = kGridCellW;
+    }
+    if (cell_w < 15)
+    {
+        cell_w = 15;
     }
 
     for (int addr = 0; addr < 128; ++addr)
@@ -428,43 +360,12 @@ void ui_init()
     }
     clear_highlight();
 
-    g_border_runner_main = lv_obj_create(screen);
-    lv_obj_remove_style_all(g_border_runner_main);
-    lv_obj_set_size(g_border_runner_main, 56, 6);
-    lv_obj_set_pos(g_border_runner_main, 3, 3);
-    lv_obj_set_style_radius(g_border_runner_main, 3, 0);
-    lv_obj_set_style_bg_opa(g_border_runner_main, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_grad_dir(g_border_runner_main, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_bg_color(g_border_runner_main, lv_color_hex(0x3F8FC1), 0);
-    lv_obj_set_style_bg_grad_color(g_border_runner_main, lv_color_hex(0xA9EBFF), 0);
-    lv_obj_set_style_shadow_width(g_border_runner_main, 10, 0);
-    lv_obj_set_style_shadow_opa(g_border_runner_main, LV_OPA_60, 0);
-    lv_obj_set_style_shadow_color(g_border_runner_main, lv_color_hex(0x66C8F1), 0);
-    lv_obj_clear_flag(g_border_runner_main, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(g_border_runner_main, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_move_foreground(g_border_runner_main);
-
-    g_border_runner_carry = lv_obj_create(screen);
-    lv_obj_remove_style_all(g_border_runner_carry);
-    lv_obj_set_size(g_border_runner_carry, 4, 4);
-    lv_obj_set_pos(g_border_runner_carry, 3, 3);
-    lv_obj_set_style_radius(g_border_runner_carry, 2, 0);
-    lv_obj_set_style_bg_opa(g_border_runner_carry, LV_OPA_80, 0);
-    lv_obj_set_style_bg_color(g_border_runner_carry, lv_color_hex(0x316F98), 0);
-    lv_obj_set_style_bg_grad_color(g_border_runner_carry, lv_color_hex(0x4A9DCC), 0);
-    lv_obj_set_style_shadow_width(g_border_runner_carry, 6, 0);
-    lv_obj_set_style_shadow_opa(g_border_runner_carry, LV_OPA_30, 0);
-    lv_obj_set_style_shadow_color(g_border_runner_carry, lv_color_hex(0x4A9DCC), 0);
-    lv_obj_clear_flag(g_border_runner_carry, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(g_border_runner_carry, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_add_flag(g_border_runner_carry, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(g_border_runner_carry);
-
     g_group = lv_group_create();
 
     g_ui_timer = lv_timer_create(ui_tick_cb, 28, nullptr);
     (void)g_ui_timer;
 
+    g_scan_elapsed_ms = 0;
     start_scan();
 }
 

@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Grove I2C Scanner
+Exec=/usr/share/APPLaunch/bin/M5CardputerZero-GroveI2C
+Terminal=false
+Type=Application
