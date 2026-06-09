@@ -9,42 +9,12 @@ arch = platform.machine()
 version = "v0.0.1"
 static_lib = "static_lib"
 update = False
-config_tmp_path = os.path.join("build", "config", "config_tmp.mk")
-
-
-def _has_cross_toolchain_prefix(path):
-    if not os.path.exists(path):
-        return False
-    try:
-        with open(path, "r") as f:
-            text = f.read()
-        return 'CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"' in text
-    except Exception:
-        return False
-
-
-def _has_sysroot(path):
-    if not os.path.exists(path):
-        return False
-    try:
-        with open(path, "r") as f:
-            text = f.read()
-        return "CONFIG_TOOLCHAIN_SYSROOT=" in text
-    except Exception:
-        return False
-
-
-def _append_sysroot_if_missing(path, sysroot_value):
-    if not os.path.exists(path) or _has_sysroot(path):
-        return
-    with open(path, "a") as f:
-        f.write(f'CONFIG_TOOLCHAIN_SYSROOT="{sysroot_value}"\n')
 
 # export CardputerZero=y for cross-compiling to CardputerZero
 if "CardputerZero" in os.environ:
-    if not os.path.exists(config_tmp_path):
+    if not os.path.exists("build/config/config_tmp.mk"):
         os.makedirs("build/config", exist_ok=True)
-        with open(config_tmp_path, "w") as f:
+        with open("build/config/config_tmp.mk", "w") as f:
             f.write("CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n")
             f.write("CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n")
             f.write("CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n")
@@ -54,9 +24,9 @@ if "CardputerZero" in os.environ:
 
 # non-aarch64: SDL simulator
 elif arch != "aarch64":
-    if not os.path.exists(config_tmp_path):
+    if not os.path.exists("build/config/config_tmp.mk"):
         os.makedirs("build/config", exist_ok=True)
-        with open(config_tmp_path, "w") as f:
+        with open("build/config/config_tmp.mk", "w") as f:
             f.write("CONFIG_V9_5_LV_USE_SDL=y\n")
             try:
                 sdl2_flags = subprocess.check_output(
@@ -68,9 +38,9 @@ elif arch != "aarch64":
 
 # aarch64 native: CardputerZero on-device build
 else:
-    if not os.path.exists(config_tmp_path):
+    if not os.path.exists("build/config/config_tmp.mk"):
         os.makedirs("build/config", exist_ok=True)
-        with open(config_tmp_path, "w") as f:
+        with open("build/config/config_tmp.mk", "w") as f:
             f.write("CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n")
             f.write("CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n")
             f.write("CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n")
@@ -80,13 +50,6 @@ local_path = Path(os.getcwd())
 sdk_path = local_path.parent.parent / "SDK"
 os.environ["SDK_PATH"] = str(sdk_path)
 os.environ["EXT_COMPONENTS_PATH"] = str(sdk_path.parent / "ext_components")
-
-is_cached_cross_build = _has_cross_toolchain_prefix(config_tmp_path)
-if "CardputerZero" in os.environ or is_cached_cross_build:
-    # project.py only applies --sysroot when CONFIG_TOOLCHAIN_SYSROOT exists in environment.
-    sysroot = os.path.join(sys.path[0], static_lib)
-    _append_sysroot_if_missing(config_tmp_path, sysroot)
-    os.environ["CONFIG_TOOLCHAIN_SYSROOT"] = sysroot
 
 env = SConscript(
     str(sdk_path / "tools" / "scons" / "project.py"),

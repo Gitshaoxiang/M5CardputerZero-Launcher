@@ -11,11 +11,13 @@
 
 namespace {
 
-static lv_obj_t *g_cells[128] = {};
+static lv_obj_t *g_table = nullptr;
+static lv_obj_t *g_status = nullptr;
 static lv_timer_t *g_ui_timer = nullptr;
 static lv_group_t *g_group = nullptr;
 static std::atomic<bool> g_scanning{false};
 static std::atomic<bool> g_scan_ready{false};
+static std::atomic<bool> g_grove_i2c_ready{false};
 static std::mutex g_scan_mutex;
 static std::array<bool, 128> g_found{};
 static lv_obj_t *g_top_fx = nullptr;
@@ -24,13 +26,22 @@ static int g_scan_elapsed_ms = 0;
 static int g_screen_w = 320;
 static int g_screen_h = 170;
 
-static constexpr int kAddrCols = 16;
-static constexpr int kGridPad = 3;
-static constexpr int kGridGap = 2;
-static constexpr int kGridCellW = 18;
-static constexpr int kCellH = 11;
 static constexpr int kScanIntervalMs = 2000;
  
+static void setup_grove_i2c_once()
+{
+    bool expected = false;
+    if (!g_grove_i2c_ready.compare_exchange_strong(expected, true))
+    {
+        return;
+    }
+
+    printf("[GroveI2C] init: switch power on (gpio17=1)\n");
+    system("timeout 1 gpioset -c gpiochip0 17=1 >/dev/null 2>&1");
+    printf("[GroveI2C] init: switch mux to I2C (gpio4=1)\n");
+    system("timeout 1 gpioset -c gpiochip0 4=1 >/dev/null 2>&1");
+}
+
 static void update_top_fx()
 {
     if (g_top_fx == nullptr)
@@ -150,19 +161,41 @@ static int count_found_addr(const std::array<bool, 128> &found)
     return count;
 }
 
-static void clear_highlight()
+static std::string format_scan_table(const std::array<bool, 128> &found)
 {
-    for (int i = 0; i < 128; ++i)
-    {
-        if (g_cells[i] == nullptr)
-        {
-            continue;
-        }
+    char line[80];
+    std::string table = "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n";
+    table += "    ------------------------------------------------\n";
 
-        lv_obj_set_style_bg_color(g_cells[i], lv_color_hex(0x16283C), 0);
-        lv_obj_set_style_border_color(g_cells[i], lv_color_hex(0x355574), 0);
-        lv_obj_set_style_text_color(g_cells[i], lv_color_hex(0xB6CCE7), 0);
+    for (int row = 0; row < 8; ++row)
+    {
+        std::snprintf(line, sizeof(line), "%02x:", row * 16);
+        table += line;
+
+        for (int col = 0; col < 16; ++col)
+        {
+            int addr = row * 16 + col;
+            if (addr < 0x03 || addr > 0x77)
+            {
+                table += "   ";
+            }
+            else if (found[addr])
+            {
+                std::snprintf(line, sizeof(line), " %02x", addr);
+                table += line;
+            }
+            else
+            {
+                table += " --";
+            }
+        }
+        if (row != 7)
+        {
+            table += "\n";
+        }
     }
+
+    return table;
 }
 
 static void apply_scan_result()
@@ -173,28 +206,27 @@ static void apply_scan_result()
         found = g_found;
     }
 
-    clear_highlight();
-
-    for (int i = 0; i < 128; ++i)
+    if (g_table != nullptr)
     {
-        if (!found[i] || g_cells[i] == nullptr)
-        {
-            continue;
-        }
+        std::string table = format_scan_table(found);
+        lv_label_set_text(g_table, table.c_str());
+    }
 
-        lv_obj_set_style_bg_color(g_cells[i], lv_color_hex(0x38B56A), 0);
-        lv_obj_set_style_border_color(g_cells[i], lv_color_hex(0x6DE59A), 0);
-        lv_obj_set_style_text_color(g_cells[i], lv_color_hex(0xFFFFFF), 0);
+    if (g_status != nullptr)
+    {
+        char status[64];
+        std::snprintf(status, sizeof(status), "bus 1 / found %d / refresh 2s", count_found_addr(found));
+        lv_label_set_text(g_status, status);
+    }
+
+    if (g_table != nullptr)
+    {
+        lv_obj_invalidate(g_table);
     }
 }
 
 static void scan_worker()
 {
-    printf("[GroveI2C] scan: switch power on (gpio17=1)\n");
-    system("gpioset -c gpiochip0 17=1 >/dev/null 2>&1");
-    printf("[GroveI2C] scan: switch mux to I2C (gpio4=1)\n");
-    system("gpioset -c gpiochip0 4=1 >/dev/null 2>&1");
-
     printf("[GroveI2C] scan: run i2cdetect -y 1\n");
     std::string output = run_command_capture("i2cdetect -y 1 2>&1");
 
@@ -243,24 +275,6 @@ static void ui_tick_cb(lv_timer_t *timer)
     }
 }
 
-static lv_obj_t *create_addr_cell(lv_obj_t *parent, int addr, int cell_w)
-{
-    lv_obj_t *cell = lv_obj_create(parent);
-    lv_obj_remove_style_all(cell);
-    lv_obj_set_size(cell, cell_w, kCellH);
-    lv_obj_set_style_radius(cell, 3, 0);
-    lv_obj_set_style_border_width(cell, 1, 0);
-
-    char text[4];
-    std::snprintf(text, sizeof(text), "%02X", addr);
-    lv_obj_t *label = lv_label_create(cell);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
-    lv_obj_center(label);
-
-    return cell;
-}
-
 } // namespace
 
 void ui_init()
@@ -280,6 +294,8 @@ void ui_init()
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
 
+    setup_grove_i2c_once();
+
     g_top_fx = lv_obj_create(screen);
     lv_obj_remove_style_all(g_top_fx);
     lv_obj_set_size(g_top_fx, 2, 6);
@@ -297,8 +313,8 @@ void ui_init()
     lv_obj_move_foreground(g_top_fx);
     lv_obj_add_flag(g_top_fx, LV_OBJ_FLAG_HIDDEN);
 
-    const int header_top = 8;
-    const int header_h = 28;
+    const int header_top = 7;
+    const int header_h = 31;
     lv_obj_t *header = lv_obj_create(screen);
     lv_obj_remove_style_all(header);
     lv_obj_set_size(header, g_screen_w, header_h);
@@ -307,66 +323,43 @@ void ui_init()
     lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *title = lv_label_create(header);
-    lv_label_set_text(title, "Grove I2C Scaner");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_label_set_text(title, "i2cdetect -y 1");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0xF1F7FF), 0);
-    lv_obj_center(title);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 10, 0);
 
-    lv_obj_t *grid = lv_obj_create(screen);
-    const int header_bottom = header_top + header_h;
-    const int grid_top = header_bottom + 1;
-    const int grid_bottom_margin = 2;
-    int grid_h = g_screen_h - grid_top - grid_bottom_margin;
-    if (grid_h < 90)
-    {
-        grid_h = 90;
-    }
-    const int available_w = g_screen_w - 20;
-    const int ideal_w = kGridPad * 2 + kAddrCols * kGridCellW + (kAddrCols - 1) * kGridGap;
-    const int grid_w = ideal_w < available_w ? ideal_w : available_w;
-    lv_obj_set_size(grid, grid_w, grid_h);
-    lv_obj_set_pos(grid, (g_screen_w - grid_w) / 2, grid_top);
-    lv_obj_set_style_bg_color(grid, lv_color_hex(0x101E31), 0);
-    lv_obj_set_style_border_color(grid, lv_color_hex(0x37557A), 0);
-    lv_obj_set_style_border_width(grid, 1, 0);
-    lv_obj_set_style_radius(grid, 6, 0);
-    lv_obj_set_style_pad_all(grid, kGridPad, 0);
-    lv_obj_set_style_pad_column(grid, kGridGap, 0);
-    lv_obj_set_style_pad_row(grid, 2, 0);
-    lv_obj_set_layout(grid, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(
-        grid,
-        LV_FLEX_ALIGN_CENTER,
-        LV_FLEX_ALIGN_CENTER,
-        LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    g_status = lv_label_create(header);
+    lv_label_set_text(g_status, "bus 1 / starting");
+    lv_obj_set_style_text_font(g_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(g_status, lv_color_hex(0x93A8BC), 0);
+    lv_obj_align(g_status, LV_ALIGN_BOTTOM_LEFT, 10, 1);
 
-    int content_w = grid_w - (kGridPad * 2);
-    int cell_w = (content_w - (kAddrCols - 1) * kGridGap) / kAddrCols;
-    if (cell_w > kGridCellW)
-    {
-        cell_w = kGridCellW;
-    }
-    if (cell_w < 15)
-    {
-        cell_w = 15;
-    }
+    lv_obj_t *panel = lv_obj_create(screen);
+    const int panel_top = header_top + header_h + 1;
+    lv_obj_set_size(panel, g_screen_w - 12, g_screen_h - panel_top - 4);
+    lv_obj_set_pos(panel, 6, panel_top);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x071018), 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0x2E465F), 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_radius(panel, 4, 0);
+    lv_obj_set_style_pad_all(panel, 5, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(panel, LV_SCROLLBAR_MODE_OFF);
 
-    for (int addr = 0; addr < 128; ++addr)
-    {
-        g_cells[addr] = create_addr_cell(grid, addr, cell_w);
-    }
-    clear_highlight();
+    g_table = lv_label_create(panel);
+    lv_label_set_text(g_table, format_scan_table(g_found).c_str());
+    lv_obj_set_style_text_font(g_table, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(g_table, lv_color_hex(0xBFD7C4), 0);
+    lv_obj_set_style_text_line_space(g_table, 0, 0);
+    lv_obj_set_style_text_letter_space(g_table, 0, 0);
+    lv_obj_set_pos(g_table, 2, 1);
 
     g_group = lv_group_create();
 
     g_ui_timer = lv_timer_create(ui_tick_cb, 28, nullptr);
     (void)g_ui_timer;
 
-    g_scan_elapsed_ms = 0;
-    start_scan();
+    g_scan_elapsed_ms = kScanIntervalMs - 300;
 }
 
 lv_group_t *ui_get_input_group()
