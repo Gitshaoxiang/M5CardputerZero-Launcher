@@ -104,6 +104,17 @@ static void append_error(const char *text)
     append_log(text);
 }
 
+static std::string with_crlf_suffix(const char *text)
+{
+    std::string packet = text ? text : "";
+    while (!packet.empty() && (packet.back() == '\r' || packet.back() == '\n'))
+    {
+        packet.pop_back();
+    }
+    packet.append("\r\n");
+    return packet;
+}
+
 static speed_t baud_to_termios(int baud)
 {
     switch (baud)
@@ -310,8 +321,7 @@ static void send_uart_action()
         return;
     }
 
-    std::string packet(msg);
-    packet.push_back('\n');
+    std::string packet = with_crlf_suffix(msg);
 
     ssize_t n = write(g_uart_fd, packet.c_str(), packet.size());
     if (n < 0)
