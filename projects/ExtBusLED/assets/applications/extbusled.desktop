@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=ExtBus LED
+Exec=/usr/share/APPLaunch/bin/M5CardputerZero-ExtBusLED
+Terminal=false
+Type=Application

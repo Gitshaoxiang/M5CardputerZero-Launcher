@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Display SSD1306
+Exec=/usr/share/APPLaunch/bin/M5CardputerZero-DisplaySSD1306
+Terminal=false
+Type=Application

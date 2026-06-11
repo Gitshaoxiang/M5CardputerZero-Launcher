@@ -1,0 +1,105 @@
+from pathlib import Path
+import os
+import platform
+import subprocess
+import shutil
+import sys
+
+arch = platform.machine()
+version = "v0.0.1"
+static_lib = "static_lib"
+update = False
+config_tmp_path = Path("build/config/config_tmp.mk")
+
+
+def wants_cardputer_cross_build():
+    """Accept the documented env var and common shorthand aliases."""
+    truthy_values = {"1", "true", "yes", "on", "y"}
+    env_aliases = ("CardputerZero", "CARDPUTERZERO", "cardputer", "CARDPUTER")
+
+    for name in env_aliases:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        if value.strip().lower() in truthy_values:
+            return True
+    return False
+
+
+cross_build = wants_cardputer_cross_build()
+
+
+def write_config_tmp(lines):
+    os.makedirs(config_tmp_path.parent, exist_ok=True)
+    with open(config_tmp_path, "w") as f:
+        f.writelines(lines)
+
+# export CardputerZero=y for cross-compiling to CardputerZero
+if cross_build:
+    write_config_tmp(
+        [
+            "CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n",
+            "CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n",
+            "CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n",
+            "CONFIG_V9_5_LV_USE_EVDEV=y\n",
+            'CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"\n',
+            f'''CONFIG_TOOLCHAIN_SYSROOT="{os.path.join(sys.path[0], static_lib)}"\n''',
+        ]
+    )
+
+# non-aarch64: SDL simulator
+elif arch != "aarch64":
+    lines = ["CONFIG_V9_5_LV_USE_SDL=y\n"]
+    try:
+        sdl2_flags = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", "sdl2"], text=True
+        ).strip()
+        lines.append('CONFIG_TOOLCHAIN_FLAGS="{}"\n'.format(sdl2_flags))
+    except Exception:
+        pass
+    write_config_tmp(lines)
+
+# aarch64 native: CardputerZero on-device build
+else:
+    write_config_tmp(
+        [
+            "CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n",
+            "CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n",
+            "CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n",
+            "CONFIG_V9_5_LV_USE_EVDEV=y\n",
+        ]
+    )
+
+local_path = Path(os.getcwd())
+sdk_path = local_path.parent.parent / "SDK"
+os.environ["SDK_PATH"] = str(sdk_path)
+os.environ["EXT_COMPONENTS_PATH"] = str(sdk_path.parent / "ext_components")
+
+env = SConscript(
+    str(sdk_path / "tools" / "scons" / "project.py"),
+    variant_dir=os.getcwd(),
+    duplicate=0,
+)
+
+if cross_build:
+    if not os.path.exists(static_lib):
+        update = True
+    else:
+        try:
+            with open(str(Path(static_lib) / "version"), "r") as f:
+                if version != f.read().strip():
+                    update = True
+        except Exception:
+            update = True
+
+    if update:
+        with open(env["PROJECT_TOOL_S"]) as f:
+            exec(f.read())
+        down_url = (
+            "https://github.com/dianjixz/M5CardputerZero-UserDemo/"
+            "releases/download/{}/sdk_bsp.tar.gz"
+        ).format(version)
+        down_path = check_wget_down(down_url, "static_lib_{}.tar.gz".format(version))
+        if os.path.exists(static_lib):
+            shutil.rmtree(static_lib)
+        shutil.move(down_path, static_lib)
