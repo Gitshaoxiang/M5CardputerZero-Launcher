@@ -1,3 +1,4 @@
+#include "app_log.h"
 #include "keyboard_input.h"
 #include "lvgl/lvgl.h"
 
@@ -241,7 +242,7 @@ static std::string detect_keyboard_device()
     return best.empty() ? "/dev/input/by-path/platform-3f804000.i2c-event" : best;
 }
 
-static int get_st7789v_fbdev(char *dev_path, size_t buf_size)
+static int get_fbdev_from_proc(const char *name_hint, char *dev_path, size_t buf_size)
 {
     if (dev_path == nullptr || buf_size == 0)
     {
@@ -259,7 +260,7 @@ static int get_st7789v_fbdev(char *dev_path, size_t buf_size)
     int fb_num = -1;
     while (fgets(line, sizeof(line), fp) != nullptr)
     {
-        if (strstr(line, "fb_st7789v") != nullptr && sscanf(line, "%d", &fb_num) == 1)
+        if ((name_hint == nullptr || strstr(line, name_hint) != nullptr) && sscanf(line, "%d", &fb_num) == 1)
         {
             break;
         }
@@ -268,12 +269,45 @@ static int get_st7789v_fbdev(char *dev_path, size_t buf_size)
     fclose(fp);
     if (fb_num < 0)
     {
-        fprintf(stderr, "fb_st7789v not found in /proc/fb\n");
         return -1;
     }
 
     snprintf(dev_path, buf_size, "/dev/fb%d", fb_num);
     return 0;
+}
+
+static const char *resolve_fbdev_device(char *dev_path, size_t buf_size)
+{
+    const char *env_device = getenv_default("LV_LINUX_FBDEV_DEVICE", nullptr);
+    if (env_device != nullptr && env_device[0] != '\0')
+    {
+        return env_device;
+    }
+
+    if (get_fbdev_from_proc("fb_st7789v", dev_path, buf_size) == 0)
+    {
+        return dev_path;
+    }
+
+    if (get_fbdev_from_proc(nullptr, dev_path, buf_size) == 0)
+    {
+        return dev_path;
+    }
+
+    static const char *fallbacks[] = {
+        "/dev/fb1",
+        "/dev/fb0",
+    };
+    for (const char *candidate : fallbacks)
+    {
+        if (path_exists(candidate))
+        {
+            snprintf(dev_path, buf_size, "%s", candidate);
+            return dev_path;
+        }
+    }
+
+    return nullptr;
 }
 
 static void process_keyboard_events()
@@ -321,32 +355,56 @@ static void lv_linux_indev_init(void)
 #endif
 
 #if LV_USE_LINUX_FBDEV
-static void lv_linux_disp_init(void)
+static bool lv_linux_disp_init(void)
 {
-    const char *device = nullptr;
     char fbdev[64] = {};
-    device = getenv_default("LV_LINUX_FBDEV_DEVICE", nullptr);
-    if ((device == nullptr) && (get_st7789v_fbdev(fbdev, sizeof(fbdev)) == 0))
+    const char *device = resolve_fbdev_device(fbdev, sizeof(fbdev));
+    if (device == nullptr)
     {
-        device = fbdev;
+        fprintf(stderr, "No usable framebuffer device found. Checked LV_LINUX_FBDEV_DEVICE, /proc/fb, /dev/fb1, /dev/fb0.\n");
+        applog::error("No usable framebuffer device found");
+        return false;
     }
 
     lv_display_t *disp = lv_linux_fbdev_create();
     if (disp == nullptr)
     {
-        printf("Failed to create fbdev display!\n");
-        return;
+        fprintf(stderr, "Failed to create fbdev display.\n");
+        return false;
     }
 
-    lv_linux_fbdev_set_file(disp, device);
+    setenv("APPLAUNCH_LINUX_FBDEV_DEVICE", device, 1);
+    printf("Using framebuffer device: %s\n", device);
+    applog::info(std::string("Using framebuffer device: ") + device);
+    if (lv_linux_fbdev_set_file(disp, device) != LV_RESULT_OK)
+    {
+        fprintf(stderr, "Failed to open framebuffer device: %s\n", device);
+        applog::error(std::string("Failed to open framebuffer device: ") + device);
+        lv_display_delete(disp);
+        return false;
+    }
+
+    lv_linux_fbdev_set_force_refresh(disp, true);
+    return true;
 }
 
 #elif LV_USE_LINUX_DRM
-static void lv_linux_disp_init(void)
+static bool lv_linux_disp_init(void)
 {
     const char *device = getenv_default("LV_LINUX_DRM_CARD", "/dev/dri/card0");
     lv_display_t *disp = lv_linux_drm_create();
-    lv_linux_drm_set_file(disp, device, -1);
+    if (disp == nullptr)
+    {
+        fprintf(stderr, "Failed to create DRM display.\n");
+        return false;
+    }
+    if (lv_linux_drm_set_file(disp, device, -1) != LV_RESULT_OK)
+    {
+        fprintf(stderr, "Failed to open DRM device: %s\n", device);
+        lv_display_delete(disp);
+        return false;
+    }
+    return true;
 }
 
 #elif LV_USE_SDL
@@ -354,11 +412,11 @@ static void lv_linux_disp_init(void)
 #include "lvgl/src/drivers/sdl/lv_sdl_mouse.h"
 #include "lvgl/src/drivers/sdl/lv_sdl_window.h"
 
-static void lv_linux_disp_init(void)
+static bool lv_linux_disp_init(void)
 {
     const int width = atoi(getenv("LV_SDL_VIDEO_WIDTH") ?: "320");
     const int height = atoi(getenv("LV_SDL_VIDEO_HEIGHT") ?: "170");
-    lv_sdl_window_create(width, height);
+    return lv_sdl_window_create(width, height) != nullptr;
 }
 
 static void app_key_event_cb(lv_event_t *event)
@@ -391,11 +449,17 @@ static void lv_linux_indev_init(void)
 
 int main(void)
 {
+    applog::begin_session("IrRemote main()");
     lv_init();
 
-    lv_linux_disp_init();
+    if (!lv_linux_disp_init())
+    {
+        applog::error("Display init failed");
+        return 1;
+    }
     ui_init();
     lv_linux_indev_init();
+    applog::info("Keyboard device: " + g_keyboard_device);
 
 #if LV_USE_SDL
     lv_obj_add_event_cb(lv_screen_active(), app_key_event_cb, LV_EVENT_KEY, nullptr);

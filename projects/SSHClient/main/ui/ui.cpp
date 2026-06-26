@@ -2435,6 +2435,22 @@ static void handle_session_key(uint32_t key, const char *utf8)
         g_local_input_tick = lv_tick_get();
         refresh_terminal_view();
     }
+    else if (key == KEY_PAGEUP || key == KEY_PREVIOUS)
+    {
+        static const char page_up_seq[] = "\x1b[5~";
+        write_session_bytes(page_up_seq, sizeof(page_up_seq) - 1);
+        g_local_input_preview.clear();
+        g_local_input_tick = lv_tick_get();
+        refresh_terminal_view();
+    }
+    else if (key == KEY_PAGEDOWN || key == KEY_NEXT)
+    {
+        static const char page_down_seq[] = "\x1b[6~";
+        write_session_bytes(page_down_seq, sizeof(page_down_seq) - 1);
+        g_local_input_preview.clear();
+        g_local_input_tick = lv_tick_get();
+        refresh_terminal_view();
+    }
     else if (key == KEY_TAB)
     {
         static const char tab_char[] = "\t";

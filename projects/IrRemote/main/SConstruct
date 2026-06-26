@@ -5,14 +5,28 @@ with open(env["PROJECT_TOOL_S"]) as f:
     exec(f.read())
 
 SRCS = Glob("src/*.c*")
-INCLUDE = [ADir("."), ADir("include")]
+SRCS += Glob("third_party/irremoteesp8266/src/*.cpp")
+SRCS += [File("../../2048/main/src/keyboard_input.c").path]
+INCLUDE = [
+    ADir("."),
+    ADir("include"),
+    ADir("third_party/irremoteesp8266/src"),
+    ADir("third_party/irremoteesp8266/test"),
+]
 PRIVATE_INCLUDE = []
 REQUIREMENTS = ["lvgl_component", "pthread"]
 STATIC_LIB = []
 DYNAMIC_LIB = []
-DEFINITIONS = []
+DEFINITIONS = [
+    "-DUNIT_TEST=1",
+    "-D_IR_ENABLE_DEFAULT_=false",
+    "-DSEND_MIDEA=true",
+    "-DSEND_GREE=true",
+    "-DSEND_HAIER_AC176=true",
+    "-DSEND_HAIER_AC_YRW02=true",
+]
 DEFINITIONS_PRIVATE = []
-LDFLAGS = ["-lutil"]
+LDFLAGS = []
 LINK_SEARCH_PATH = []
 STATIC_FILES = []
 
@@ -46,7 +60,7 @@ if "CONFIG_V9_5_LV_USE_SDL" in os.environ:
 
 env["COMPONENTS"].append(
     {
-        "target": "M5CardputerZero-SSHClient",
+        "target": "M5CardputerZero-IrRemote",
         "SRCS": SRCS,
         "INCLUDE": INCLUDE,
         "PRIVATE_INCLUDE": PRIVATE_INCLUDE,

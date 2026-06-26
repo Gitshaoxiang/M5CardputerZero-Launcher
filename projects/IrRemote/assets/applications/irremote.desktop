@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=IR Remote
+Exec=/usr/share/APPLaunch/bin/M5CardputerZero-IrRemote
+Terminal=false
+Type=Application

@@ -1,0 +1,137 @@
+from pathlib import Path
+import os
+import platform
+import subprocess
+import shutil
+import sys
+
+arch = platform.machine()
+version = "v0.0.1"
+static_lib = "static_lib"
+update = False
+config_tmp_path = os.path.join("build", "config", "config_tmp.mk")
+
+
+def _read_text(path):
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _has_cross_toolchain_prefix(path):
+    return 'CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"' in _read_text(path)
+
+
+def _has_sysroot(path):
+    return "CONFIG_TOOLCHAIN_SYSROOT=" in _read_text(path)
+
+
+def _has_sdl_backend(path):
+    return "CONFIG_V9_5_LV_USE_SDL=y" in _read_text(path)
+
+
+def _write_fbdev_config(path, include_sysroot):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n")
+        f.write("CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n")
+        f.write("CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n")
+        f.write("CONFIG_V9_5_LV_USE_EVDEV=y\n")
+        if include_sysroot:
+            f.write('CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"\n')
+            f.write(f'''CONFIG_TOOLCHAIN_SYSROOT="{os.path.join(sys.path[0], static_lib)}"\n''')
+
+
+def _write_sdl_config(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("CONFIG_V9_5_LV_USE_SDL=y\n")
+        try:
+            sdl2_flags = subprocess.check_output(
+                ["pkg-config", "--cflags", "--libs", "sdl2"], text=True
+            ).strip()
+            f.write('CONFIG_TOOLCHAIN_FLAGS="{}"\n'.format(sdl2_flags))
+        except Exception:
+            pass
+
+
+def _append_sysroot_if_missing(path, sysroot_value):
+    if not os.path.exists(path) or _has_sysroot(path):
+        return
+    with open(path, "a") as f:
+        f.write(f'CONFIG_TOOLCHAIN_SYSROOT="{sysroot_value}"\n')
+
+
+def _remove_stale_global_config(expect_cross):
+    global_mk = os.path.join("build", "config", "global_config.mk")
+    global_h = os.path.join("build", "config", "global_config.h")
+    text = _read_text(global_mk)
+    if not text:
+        return
+
+    has_cross = 'CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"' in text
+    has_sdl = "CONFIG_V9_5_LV_USE_SDL=y" in text
+    stale = (expect_cross and (not has_cross or has_sdl)) or (not expect_cross and has_cross)
+    if not stale:
+        return
+
+    for path in (global_mk, global_h):
+        if os.path.exists(path):
+            os.remove(path)
+
+if "CardputerZero" in os.environ:
+    if not os.path.exists(config_tmp_path) or not _has_cross_toolchain_prefix(config_tmp_path):
+        _write_fbdev_config(config_tmp_path, include_sysroot=True)
+    _remove_stale_global_config(expect_cross=True)
+elif arch != "aarch64":
+    if not os.path.exists(config_tmp_path):
+        _write_sdl_config(config_tmp_path)
+    _remove_stale_global_config(expect_cross=False)
+else:
+    if not os.path.exists(config_tmp_path) or _has_sdl_backend(config_tmp_path):
+        _write_fbdev_config(config_tmp_path, include_sysroot=False)
+    _remove_stale_global_config(expect_cross=False)
+
+local_path = Path(os.getcwd())
+sdk_path = local_path.parent.parent / "SDK"
+os.environ["SDK_PATH"] = str(sdk_path)
+os.environ["EXT_COMPONENTS_PATH"] = str(sdk_path.parent / "ext_components")
+
+is_cached_cross_build = _has_cross_toolchain_prefix(config_tmp_path)
+if "CardputerZero" in os.environ or is_cached_cross_build:
+    sysroot = os.path.join(sys.path[0], static_lib)
+    _append_sysroot_if_missing(config_tmp_path, sysroot)
+    os.environ["CONFIG_TOOLCHAIN_SYSROOT"] = sysroot
+
+env = SConscript(
+    str(sdk_path / "tools" / "scons" / "project.py"),
+    variant_dir=os.getcwd(),
+    duplicate=0,
+)
+
+if "CardputerZero" in os.environ:
+    if not os.path.exists(static_lib):
+        update = True
+    else:
+        try:
+            with open(str(Path(static_lib) / "version"), "r") as f:
+                if version != f.read().strip():
+                    update = True
+        except Exception:
+            update = True
+
+    if update:
+        with open(env["PROJECT_TOOL_S"]) as f:
+            exec(f.read())
+        down_url = (
+            "https://github.com/dianjixz/M5CardputerZero-UserDemo/"
+            "releases/download/{}/sdk_bsp.tar.gz"
+        ).format(version)
+        down_path = check_wget_down(down_url, "static_lib_{}.tar.gz".format(version))
+        if os.path.exists(static_lib):
+            shutil.rmtree(static_lib)
+        shutil.move(down_path, static_lib)
