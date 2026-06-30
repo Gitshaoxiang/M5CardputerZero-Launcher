@@ -34,6 +34,7 @@ namespace {
 constexpr uint32_t kCarrierHz = 38000;
 constexpr uint32_t kDutyCycle = 50;
 constexpr uint32_t kRecTimeoutUs = 30000;
+constexpr uint32_t kMaxLeadingIdleUs = 20000;
 constexpr std::size_t kPacketBytes = 4;
 constexpr uint32_t kNecHdrPulseUs = 9000;
 constexpr uint32_t kNecHdrSpaceUs = 4500;
@@ -516,6 +517,18 @@ std::vector<uint32_t> sanitize_raw_timings(const std::vector<uint32_t> &timings)
 std::vector<uint32_t> prepare_pulse_timings(const std::vector<uint32_t> &timings)
 {
     std::vector<uint32_t> prepared = sanitize_raw_timings(timings);
+    std::size_t dropped = 0;
+    while (!prepared.empty() && prepared.front() > kMaxLeadingIdleUs)
+    {
+        applog::warn("Dropping leading raw idle gap len=" + std::to_string(prepared.front()));
+        prepared.erase(prepared.begin());
+        ++dropped;
+    }
+    if (dropped > 0)
+    {
+        applog::info("Raw send normalized by removing " + std::to_string(dropped) +
+                     " leading gap(s), preview=" + preview_timings(prepared));
+    }
     if (!prepared.empty() && (prepared.size() % 2) == 0)
     {
         applog::warn("Pulse send requires odd timing count; trimming trailing space len=" +
@@ -1327,6 +1340,11 @@ ReceiveSnapshot ReceiverSession::poll()
                 if (LIRC_IS_SPACE(word) || LIRC_IS_PULSE(word))
                 {
                     uint32_t value = LIRC_VALUE(word);
+                    if (pulse_space_buffer_.empty() && LIRC_IS_SPACE(word))
+                    {
+                        applog::debug("Ignoring leading receive space len=" + std::to_string(value));
+                        continue;
+                    }
                     if (LIRC_IS_SPACE(word) && value > 12000 && !pulse_space_buffer_.empty())
                     {
                         finalize_receive(&snapshot_, pulse_space_buffer_);

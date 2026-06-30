@@ -28,6 +28,12 @@ enum class AppPage {
     Nec,
 };
 
+enum class ReceiveMode {
+    None,
+    CopyRecord,
+    NecMonitor,
+};
+
 struct StoredSignal {
     std::string name;
     std::string protocol;
@@ -51,12 +57,17 @@ static lv_obj_t *g_subtitle = nullptr;
 static lv_obj_t *g_notice = nullptr;
 static lv_obj_t *g_copy_tab = nullptr;
 static lv_obj_t *g_copy_tab_label = nullptr;
+static lv_obj_t *g_copy_tab_cursor = nullptr;
 static lv_obj_t *g_aircon_tab = nullptr;
 static lv_obj_t *g_aircon_tab_label = nullptr;
+static lv_obj_t *g_aircon_tab_cursor = nullptr;
 static lv_obj_t *g_nec_tab = nullptr;
 static lv_obj_t *g_nec_tab_label = nullptr;
+static lv_obj_t *g_nec_tab_cursor = nullptr;
+static lv_obj_t *g_left_card = nullptr;
 static lv_obj_t *g_left_title = nullptr;
 static lv_obj_t *g_left_body = nullptr;
+static lv_obj_t *g_right_card = nullptr;
 static lv_obj_t *g_right_title = nullptr;
 static std::array<lv_obj_t *, kVisibleRows> g_rows {};
 static std::array<lv_obj_t *, kVisibleRows> g_row_titles {};
@@ -71,7 +82,7 @@ static int g_aircon_scroll = 0;
 static int g_nec_cursor = 0;
 static int g_nec_scroll = 0;
 static int g_selected_signal = -1;
-static bool g_capture_armed = false;
+static ReceiveMode g_receive_mode = ReceiveMode::None;
 
 static std::size_t g_aircon_brand = 0;
 static bool g_aircon_power = false;
@@ -112,6 +123,17 @@ static const char *aircon_fan_name(aircon::Fan fan)
     case aircon::Fan::High: return "High";
     }
     return "Auto";
+}
+
+static const char *receive_mode_name(ReceiveMode mode)
+{
+    switch (mode)
+    {
+    case ReceiveMode::None: return "idle";
+    case ReceiveMode::CopyRecord: return "copy-record";
+    case ReceiveMode::NecMonitor: return "nec-monitor";
+    }
+    return "idle";
 }
 
 static std::string trim_copy(std::string text)
@@ -330,6 +352,18 @@ static std::string signal_protocol_name(const StoredSignal &signal)
     return signal.protocol.empty() ? "RAW" : signal.protocol;
 }
 
+static constexpr int kCopyItemRowStart = 1;
+
+static bool is_copy_recording()
+{
+    return g_receive_mode == ReceiveMode::CopyRecord;
+}
+
+static bool is_nec_monitoring()
+{
+    return g_receive_mode == ReceiveMode::NecMonitor;
+}
+
 static void set_notice(const std::string &text, lv_color_t color)
 {
     g_notice_text = text;
@@ -339,6 +373,21 @@ static void set_notice(const std::string &text, lv_color_t color)
         lv_label_set_text(g_notice, g_notice_text.c_str());
         lv_obj_set_style_text_color(g_notice, g_notice_color, 0);
     }
+}
+
+static void set_page_notice()
+{
+    if (g_page == AppPage::Aircon)
+    {
+        set_notice("8 Edit", lv_color_hex(0x78C8FF));
+        return;
+    }
+    if (g_page == AppPage::Copy)
+    {
+        set_notice(is_copy_recording() ? "Recording" : "Enter New", lv_color_hex(0x78C8FF));
+        return;
+    }
+    set_notice(is_nec_monitoring() ? "Live NEC" : "NEC Page", lv_color_hex(0x78C8FF));
 }
 
 static std::string describe_device(const irremote::DeviceInfo &info)
@@ -362,7 +411,7 @@ static void save_signals()
     std::ofstream out(get_signal_path(), std::ios::trunc);
     if (!out.is_open())
     {
-        set_notice("Signal store write failed", lv_color_hex(0xFFB37A));
+        set_notice("Save fail", lv_color_hex(0xFFB37A));
         return;
     }
 
@@ -383,7 +432,7 @@ static void normalize_selection()
     if (g_signals.empty())
     {
         g_selected_signal = -1;
-        g_copy_cursor = std::min(g_copy_cursor, 2);
+        g_copy_cursor = 0;
         return;
     }
 
@@ -396,12 +445,12 @@ static void normalize_selection()
         g_selected_signal = static_cast<int>(g_signals.size()) - 1;
     }
 
-    if (g_copy_cursor >= 3)
+    if (g_copy_cursor >= kCopyItemRowStart)
     {
-        int signal_index = g_copy_cursor - 3;
+        int signal_index = g_copy_cursor - kCopyItemRowStart;
         if (signal_index >= static_cast<int>(g_signals.size()))
         {
-            g_copy_cursor = 3 + static_cast<int>(g_signals.size()) - 1;
+            g_copy_cursor = kCopyItemRowStart + static_cast<int>(g_signals.size()) - 1;
         }
     }
 }
@@ -576,7 +625,7 @@ static int current_row_count()
 {
     if (g_page == AppPage::Copy)
     {
-        return std::max(4, 3 + static_cast<int>(g_signals.size()));
+        return std::max(1, kCopyItemRowStart + static_cast<int>(g_signals.size()));
     }
     if (g_page == AppPage::Aircon)
     {
@@ -634,9 +683,9 @@ static void sync_scroll()
     }
     scroll = std::max(0, std::min(scroll, std::max(0, rows - kVisibleRows)));
 
-    if (g_page == AppPage::Copy && cursor >= 3 && !g_signals.empty())
+    if (g_page == AppPage::Copy && cursor >= kCopyItemRowStart && !g_signals.empty())
     {
-        g_selected_signal = std::min(cursor - 3, static_cast<int>(g_signals.size()) - 1);
+        g_selected_signal = std::min(cursor - kCopyItemRowStart, static_cast<int>(g_signals.size()) - 1);
     }
 }
 
@@ -646,6 +695,22 @@ static std::string next_signal_name()
     char buffer[32] = {};
     std::snprintf(buffer, sizeof(buffer), "Signal %02d", index);
     return buffer;
+}
+
+static StoredSignal *current_signal_mut()
+{
+    if (g_signals.empty() || g_selected_signal < 0 || g_selected_signal >= static_cast<int>(g_signals.size()))
+    {
+        return nullptr;
+    }
+    return &g_signals[static_cast<std::size_t>(g_selected_signal)];
+}
+
+static bool live_snapshot_has_nec()
+{
+    return g_last_snapshot.data.size() == 4 &&
+           !g_last_snapshot.protocol.empty() &&
+           g_last_snapshot.protocol != "RAW";
 }
 
 static void record_last_action(const std::string &label, const irremote::SendResult &result)
@@ -678,7 +743,7 @@ static bool send_signal_raw(const StoredSignal &signal, const std::string &label
     }
     else
     {
-        set_notice("Signal has no replay data", lv_color_hex(0xFFB37A));
+        set_notice("No data", lv_color_hex(0xFFB37A));
         return false;
     }
 
@@ -687,7 +752,7 @@ static bool send_signal_raw(const StoredSignal &signal, const std::string &label
         applog::warn("UI replay failed label=" + label +
                      " path=" + result.device_path +
                      " message=" + result.message);
-        set_notice(result.message.empty() ? "IR send failed" : result.message, lv_color_hex(0xFFB37A));
+        set_notice(result.message.empty() ? "Send fail" : result.message, lv_color_hex(0xFFB37A));
         return false;
     }
 
@@ -695,7 +760,7 @@ static bool send_signal_raw(const StoredSignal &signal, const std::string &label
                  " path=" + result.device_path +
                  " message=" + result.message);
     record_last_action(label, result);
-    set_notice("Sent " + label, lv_color_hex(0x9BE3B1));
+    set_notice("Sent", lv_color_hex(0x9BE3B1));
     save_state();
     return true;
 }
@@ -704,7 +769,7 @@ static bool send_signal_nec(const StoredSignal &signal, const std::string &label
 {
     if (signal.data.size() != 4)
     {
-        set_notice("Selected signal has no NEC decode", lv_color_hex(0xFFD57A));
+        set_notice("No NEC", lv_color_hex(0xFFD57A));
         return false;
     }
 
@@ -716,7 +781,7 @@ static bool send_signal_nec(const StoredSignal &signal, const std::string &label
         applog::warn("UI NEC send failed label=" + label +
                      " path=" + result.device_path +
                      " message=" + result.message);
-        set_notice(result.message.empty() ? "IR send failed" : result.message, lv_color_hex(0xFFB37A));
+        set_notice(result.message.empty() ? "Send fail" : result.message, lv_color_hex(0xFFB37A));
         return false;
     }
 
@@ -724,9 +789,27 @@ static bool send_signal_nec(const StoredSignal &signal, const std::string &label
                  " path=" + result.device_path +
                  " message=" + result.message);
     record_last_action(label, result);
-    set_notice("Sent NEC " + label, lv_color_hex(0x9BE3B1));
+    set_notice("NEC sent", lv_color_hex(0x9BE3B1));
     save_state();
     return true;
+}
+
+static bool send_live_nec()
+{
+    if (!live_snapshot_has_nec())
+    {
+        set_notice("No NEC", lv_color_hex(0xFFD57A));
+        return false;
+    }
+
+    StoredSignal signal;
+    signal.name = "Live NEC";
+    signal.protocol = g_last_snapshot.protocol;
+    signal.address = g_last_snapshot.address;
+    signal.command = g_last_snapshot.command;
+    signal.data = g_last_snapshot.data;
+    signal.raw_timings = g_last_snapshot.raw_timings;
+    return send_signal_nec(signal, signal.name);
 }
 
 static aircon::State current_aircon_state()
@@ -752,7 +835,7 @@ static bool send_aircon_action(aircon::Action action,
         applog::warn("UI aircon build failed brand=" + std::string(aircon::brand_name(g_aircon_brand)) +
                      " label=" + label +
                      " message=" + built.message);
-        set_notice(built.message.empty() ? "A/C timing generation failed" : built.message, lv_color_hex(0xFFB37A));
+        set_notice(built.message.empty() ? "Build fail" : built.message, lv_color_hex(0xFFB37A));
         return false;
     }
 
@@ -766,7 +849,7 @@ static bool send_aircon_action(aircon::Action action,
                      " label=" + label +
                      " path=" + result.device_path +
                      " message=" + result.message);
-        set_notice(result.message.empty() ? "IR send failed" : result.message, lv_color_hex(0xFFB37A));
+        set_notice(result.message.empty() ? "Send fail" : result.message, lv_color_hex(0xFFB37A));
         return false;
     }
 
@@ -775,34 +858,85 @@ static bool send_aircon_action(aircon::Action action,
                  " path=" + result.device_path +
                  " message=" + result.message);
     record_last_action(label, result);
-    set_notice("Sent " + std::string(aircon::brand_name(g_aircon_brand)) + " " + label, lv_color_hex(0x9BE3B1));
+    set_notice("AC sent", lv_color_hex(0x9BE3B1));
     save_state();
     return true;
 }
 
-static void toggle_capture()
+static void stop_receiver_mode()
 {
-    if (!g_capture_armed)
+    if (g_receive_mode != ReceiveMode::None || g_receiver.snapshot().opened)
     {
-        if (g_receiver.start(0, false, true))
-        {
-            applog::info("UI raw capture armed path=" + g_receiver.snapshot().device_path);
-            g_capture_armed = true;
-            g_last_snapshot = g_receiver.snapshot();
-            set_notice("Listening for raw IR copy", lv_color_hex(0xFFD57A));
-        }
-        else
-        {
-            applog::warn("UI raw capture start failed message=" + g_receiver.snapshot().message);
-            set_notice(g_receiver.snapshot().message, lv_color_hex(0xFFB37A));
-        }
-    }
-    else
-    {
-        applog::info("UI raw capture stopped");
+        applog::info("UI receiver stop mode=" + std::string(receive_mode_name(g_receive_mode)));
         g_receiver.stop();
-        g_capture_armed = false;
-        set_notice("Capture stopped", lv_color_hex(0xFFD57A));
+    }
+    g_receive_mode = ReceiveMode::None;
+}
+
+static bool start_receiver_mode(ReceiveMode mode)
+{
+    if (g_receive_mode == mode && g_receiver.snapshot().opened)
+    {
+        return true;
+    }
+
+    stop_receiver_mode();
+
+    const bool raw_only = mode == ReceiveMode::CopyRecord;
+    if (!g_receiver.start(0, false, raw_only))
+    {
+        g_last_snapshot = g_receiver.snapshot();
+        applog::warn("UI receiver start failed mode=" + std::string(receive_mode_name(mode)) +
+                     " message=" + g_last_snapshot.message);
+        set_notice(g_last_snapshot.message.empty() ? "RX fail" : g_last_snapshot.message,
+                   lv_color_hex(0xFFB37A));
+        return false;
+    }
+
+    g_receive_mode = mode;
+    g_last_snapshot = g_receiver.snapshot();
+    applog::info("UI receiver start mode=" + std::string(receive_mode_name(mode)) +
+                 " path=" + g_last_snapshot.device_path);
+    return true;
+}
+
+static bool start_copy_record()
+{
+    const StoredSignal *signal = current_signal();
+    if (signal == nullptr)
+    {
+        set_notice("Press N", lv_color_hex(0xFFD57A));
+        return false;
+    }
+
+    if (start_receiver_mode(ReceiveMode::CopyRecord))
+    {
+        set_notice("Recording", lv_color_hex(0xFFD57A));
+        return true;
+    }
+    return false;
+}
+
+static void stop_copy_record(const std::string &message)
+{
+    stop_receiver_mode();
+    set_notice(message, lv_color_hex(0xFFD57A));
+}
+
+static void ensure_nec_monitor()
+{
+    if (g_page != AppPage::Nec)
+    {
+        if (is_nec_monitoring())
+        {
+            stop_receiver_mode();
+        }
+        return;
+    }
+
+    if (start_receiver_mode(ReceiveMode::NecMonitor))
+    {
+        set_notice(live_snapshot_has_nec() ? "NEC ready" : "Listening", lv_color_hex(0x78C8FF));
     }
 }
 
@@ -818,9 +952,14 @@ static void cycle_selected_signal()
 
 static void delete_selected_signal()
 {
+    if (is_copy_recording())
+    {
+        stop_copy_record("Recording stopped");
+    }
+
     if (g_selected_signal < 0 || g_selected_signal >= static_cast<int>(g_signals.size()))
     {
-        set_notice("No signal to delete", lv_color_hex(0xFFD57A));
+        set_notice("No item", lv_color_hex(0xFFD57A));
         return;
     }
 
@@ -832,7 +971,25 @@ static void delete_selected_signal()
     }
     normalize_selection();
     save_signals();
-    set_notice("Deleted " + name, lv_color_hex(0xFFD57A));
+    set_notice("Deleted", lv_color_hex(0xFFD57A));
+}
+
+static void create_copy_item(bool auto_record)
+{
+    StoredSignal signal;
+    signal.name = next_signal_name();
+    signal.protocol = "RAW";
+    g_signals.push_back(signal);
+    g_selected_signal = static_cast<int>(g_signals.size()) - 1;
+    g_copy_cursor = kCopyItemRowStart + g_selected_signal;
+    save_signals();
+    save_state();
+    set_notice("Created", lv_color_hex(0x82E3B5));
+
+    if (auto_record)
+    {
+        start_copy_record();
+    }
 }
 
 static void replay_selected_signal()
@@ -840,7 +997,12 @@ static void replay_selected_signal()
     const StoredSignal *signal = current_signal();
     if (signal == nullptr)
     {
-        set_notice("No saved signal selected", lv_color_hex(0xFFD57A));
+        set_notice("No item", lv_color_hex(0xFFD57A));
+        return;
+    }
+    if (signal->raw_timings.empty())
+    {
+        set_notice("No raw", lv_color_hex(0xFFD57A));
         return;
     }
     send_signal_raw(*signal, signal->name);
@@ -852,19 +1014,18 @@ static void activate_current_row()
     {
         if (g_copy_cursor == 0)
         {
-            toggle_capture();
-        }
-        else if (g_copy_cursor == 1)
-        {
-            replay_selected_signal();
-        }
-        else if (g_copy_cursor == 2)
-        {
-            delete_selected_signal();
+            if (is_copy_recording())
+            {
+                stop_copy_record("Recording stopped");
+            }
+            else
+            {
+                create_copy_item(true);
+            }
         }
         else
         {
-            g_selected_signal = std::min(g_copy_cursor - 3, static_cast<int>(g_signals.size()) - 1);
+            g_selected_signal = std::min(g_copy_cursor - kCopyItemRowStart, static_cast<int>(g_signals.size()) - 1);
             replay_selected_signal();
         }
         save_state();
@@ -877,7 +1038,7 @@ static void activate_current_row()
         switch (g_aircon_cursor)
         {
         case 0:
-            set_notice("Use key 8 to change brand", lv_color_hex(0xFFD57A));
+            set_notice("8 Brand", lv_color_hex(0xFFD57A));
             break;
         case 1:
         {
@@ -964,21 +1125,21 @@ static void activate_current_row()
         return;
     }
 
-    if (g_nec_cursor == 5)
+    if (g_nec_cursor == 0)
     {
-        const StoredSignal *signal = current_signal();
-        if (signal == nullptr)
+        if (is_nec_monitoring())
         {
-            set_notice("No signal selected", lv_color_hex(0xFFD57A));
+            stop_receiver_mode();
+            set_notice("Mon off", lv_color_hex(0xFFD57A));
         }
         else
         {
-            send_signal_nec(*signal, signal->name);
+            ensure_nec_monitor();
         }
     }
-    else if (g_nec_cursor == 0)
+    else if (g_nec_cursor == 5)
     {
-        set_notice("Use key 8 to switch source", lv_color_hex(0xFFD57A));
+        send_live_nec();
     }
 
     save_state();
@@ -988,13 +1149,14 @@ static void adjust_current_row()
 {
     if (g_page == AppPage::Copy)
     {
-        if (g_copy_cursor == 0)
+        if (g_copy_cursor >= kCopyItemRowStart && !g_signals.empty())
         {
-            toggle_capture();
+            g_selected_signal = std::min(g_copy_cursor - kCopyItemRowStart, static_cast<int>(g_signals.size()) - 1);
+            delete_selected_signal();
         }
-        else if ((g_copy_cursor == 1 || g_copy_cursor == 2 || g_copy_cursor >= 3) && !g_signals.empty())
+        else
         {
-            cycle_selected_signal();
+            set_notice("Enter New", lv_color_hex(0xFFD57A));
         }
         save_state();
         return;
@@ -1006,22 +1168,22 @@ static void adjust_current_row()
         {
         case 0:
             g_aircon_brand = (g_aircon_brand + 1) % aircon::brand_count();
-            set_notice(std::string("Brand: ") + aircon::brand_name(g_aircon_brand), lv_color_hex(0x78C8FF));
+            set_notice(shorten_text(aircon::brand_name(g_aircon_brand), 10), lv_color_hex(0x78C8FF));
             break;
         case 4:
             g_aircon_mode = static_cast<aircon::Mode>((static_cast<int>(g_aircon_mode) + 1) % 5);
-            set_notice(std::string("Mode: ") + aircon_mode_name(g_aircon_mode), lv_color_hex(0x78C8FF));
+            set_notice(std::string("Mode ") + aircon_mode_name(g_aircon_mode), lv_color_hex(0x78C8FF));
             break;
         case 5:
             g_aircon_fan = static_cast<aircon::Fan>((static_cast<int>(g_aircon_fan) + 1) % 4);
-            set_notice(std::string("Fan: ") + aircon_fan_name(g_aircon_fan), lv_color_hex(0x78C8FF));
+            set_notice(std::string("Fan ") + aircon_fan_name(g_aircon_fan), lv_color_hex(0x78C8FF));
             break;
         case 6:
             g_aircon_swing = !g_aircon_swing;
-            set_notice(std::string("Swing: ") + (g_aircon_swing ? "On/Auto" : "Off"), lv_color_hex(0x78C8FF));
+            set_notice(g_aircon_swing ? "Swing On" : "Swing Off", lv_color_hex(0x78C8FF));
             break;
         default:
-            set_notice("Key 8 edits brand/mode/fan/swing", lv_color_hex(0xFFD57A));
+            set_notice("8 Edit", lv_color_hex(0xFFD57A));
             break;
         }
 
@@ -1029,14 +1191,21 @@ static void adjust_current_row()
         return;
     }
 
-    if (g_nec_cursor == 0 && !g_signals.empty())
+    if (g_nec_cursor == 0)
     {
-        cycle_selected_signal();
-        set_notice("NEC source changed", lv_color_hex(0x78C8FF));
+        if (is_nec_monitoring())
+        {
+            stop_receiver_mode();
+            set_notice("Mon off", lv_color_hex(0xFFD57A));
+        }
+        else
+        {
+            ensure_nec_monitor();
+        }
     }
     else
     {
-        set_notice("Key 8 switches NEC source", lv_color_hex(0xFFD57A));
+        set_notice("Live NEC", lv_color_hex(0x78C8FF));
     }
     save_state();
 }
@@ -1046,36 +1215,24 @@ static ListRow build_copy_row(int index)
     ListRow row;
     if (index == 0)
     {
-        row.title = g_capture_armed ? "Stop RX" : "Start RX";
-        row.value = g_capture_armed ? "Learning raw..." : "Copy full signal";
-        row.accent = lv_color_hex(g_capture_armed ? 0xFFD57A : 0x82E3B5);
-    }
-    else if (index == 1)
-    {
-        row.title = "Replay";
-        row.value = current_signal() ? shorten_text(current_signal()->name, 11) : "No saved";
-        row.accent = lv_color_hex(0x78C8FF);
-    }
-    else if (index == 2)
-    {
-        row.title = "Delete";
-        row.value = current_signal() ? shorten_text(current_signal()->name, 11) : "Nothing";
-        row.accent = lv_color_hex(0xFF9F76);
+        row.title = "New";
+        row.value = is_copy_recording() ? "Listening..." : "Create & learn";
+        row.accent = lv_color_hex(is_copy_recording() ? 0xFFD57A : 0x82E3B5);
     }
     else
     {
-        int signal_index = index - 3;
+        int signal_index = index - kCopyItemRowStart;
         if (signal_index >= 0 && signal_index < static_cast<int>(g_signals.size()))
         {
             const StoredSignal &signal = g_signals[static_cast<std::size_t>(signal_index)];
-            row.title = shorten_text(signal.name, 11);
-            row.value = signal_protocol_name(signal) + " " + std::to_string(signal.raw_timings.size()) + "t";
+            row.title = shorten_text(signal.name, 20);
+            row.value = is_copy_recording() && signal_index == g_selected_signal ? "Listening..." : "";
             row.accent = signal_index == g_selected_signal ? lv_color_hex(0x82E3B5) : lv_color_hex(0x78C8FF);
         }
         else
         {
-            row.title = "No Signals";
-            row.value = "Press RX to copy";
+            row.title = "No Copies";
+            row.value = "";
             row.accent = lv_color_hex(0x78C8FF);
         }
     }
@@ -1133,39 +1290,39 @@ static ListRow build_aircon_row(int index)
 
 static ListRow build_nec_row(int index)
 {
-    const StoredSignal *signal = current_signal();
     ListRow row;
     switch (index)
     {
     case 0:
-        row.title = "Source";
-        row.value = signal ? shorten_text(signal->name, 11) : "No signal";
+        row.title = "Monitor";
+        row.value = is_nec_monitoring() ? "Live" : "Paused";
         row.accent = lv_color_hex(0x82E3B5);
         break;
     case 1:
         row.title = "Decode";
-        row.value = (signal && signal->data.size() == 4) ? "NEC ready" : "Raw only";
-        row.accent = (signal && signal->data.size() == 4) ? lv_color_hex(0x82E3B5) : lv_color_hex(0xFFD57A);
+        row.value = live_snapshot_has_nec() ? "NEC ready" :
+                    (g_last_snapshot.signal_seen ? "Raw only" : "Waiting");
+        row.accent = live_snapshot_has_nec() ? lv_color_hex(0x82E3B5) : lv_color_hex(0xFFD57A);
         break;
     case 2:
         row.title = "Proto";
-        row.value = signal ? signal_protocol_name(*signal) : "--";
+        row.value = g_last_snapshot.protocol.empty() ? "--" : g_last_snapshot.protocol;
         row.accent = lv_color_hex(0x78C8FF);
         break;
     case 3:
         row.title = "Address";
-        row.value = (signal && signal->data.size() == 4) ? irremote::format_nec_address(signal->address) : "--";
+        row.value = live_snapshot_has_nec() ? irremote::format_nec_address(g_last_snapshot.address) : "--";
         row.accent = lv_color_hex(0x78C8FF);
         break;
     case 4:
         row.title = "Command";
-        row.value = (signal && signal->data.size() == 4) ? irremote::format_nec_command(signal->command) : "--";
+        row.value = live_snapshot_has_nec() ? irremote::format_nec_command(g_last_snapshot.command) : "--";
         row.accent = lv_color_hex(0x78C8FF);
         break;
     case 5:
         row.title = "Send NEC";
-        row.value = (signal && signal->data.size() == 4) ? shorten_text(irremote::format_hex_bytes(signal->data), 11) : "N/A";
-        row.accent = (signal && signal->data.size() == 4) ? lv_color_hex(0x82E3B5) : lv_color_hex(0xFF9F76);
+        row.value = live_snapshot_has_nec() ? shorten_text(irremote::format_hex_bytes(g_last_snapshot.data), 11) : "N/A";
+        row.accent = live_snapshot_has_nec() ? lv_color_hex(0x82E3B5) : lv_color_hex(0xFF9F76);
         break;
     }
     return row;
@@ -1189,27 +1346,7 @@ static std::string build_left_body()
     std::ostringstream out;
     if (g_page == AppPage::Copy)
     {
-        out << "RX:" << (g_receiver_info.available ? "ok" : "--") << "\n";
-        out << "TX:" << (g_sender_info.available ? "ok" : "--") << "\n";
-        out << "SV:" << g_signals.size() << "\n";
-        out << "CAP:" << (g_capture_armed ? "on" : "off") << "\n";
-        if (current_signal() != nullptr)
-        {
-            out << "SEL:" << shorten_text(current_signal()->name, 8) << "\n";
-            out << "RAW:" << current_signal()->raw_timings.size() << "t\n";
-        }
-        else
-        {
-            out << "SEL:none\n";
-        }
-        if (g_capture_armed && !g_last_snapshot.raw_summary.empty())
-        {
-            out << shorten_text(preview_raw_timings(g_last_snapshot.raw_timings), 12);
-        }
-        else
-        {
-            out << shorten_text(g_last_action, 12);
-        }
+        out << "";
         return out.str();
     }
 
@@ -1226,11 +1363,13 @@ static std::string build_left_body()
         return out.str();
     }
 
-    const StoredSignal *signal = current_signal();
-    out << "SRC:" << (signal ? shorten_text(signal->name, 8) : "none") << "\n";
-    out << "RAW:" << (signal ? std::to_string(signal->raw_timings.size()) : "0") << "t\n";
-    out << "PREV:\n";
-    out << shorten_text(signal ? preview_raw_timings(signal->raw_timings) : "--", 12) << "\n";
+    out << "RX:" << (g_receiver_info.available ? "ok" : "--") << "\n";
+    out << "MON:" << (is_nec_monitoring() ? "on" : "off") << "\n";
+    out << "PT:" << shorten_text(g_last_snapshot.protocol.empty() ? "--" : g_last_snapshot.protocol, 8) << "\n";
+    out << "AD:" << (live_snapshot_has_nec() ? irremote::format_nec_address(g_last_snapshot.address) : "--") << "\n";
+    out << "CM:" << (live_snapshot_has_nec() ? irremote::format_nec_command(g_last_snapshot.command) : "--") << "\n";
+    out << "RAW:" << g_last_snapshot.raw_timings.size() << "t\n";
+    out << shorten_text(preview_raw_timings(g_last_snapshot.raw_timings), 12) << "\n";
     out << shorten_text(g_last_action, 12);
     return out.str();
 }
@@ -1262,15 +1401,15 @@ static void refresh_ui()
     const bool aircon_active = g_page == AppPage::Aircon;
     const bool nec_active = g_page == AppPage::Nec;
 
-    lv_obj_set_style_bg_color(g_copy_tab, copy_active ? lv_color_hex(0x103E59) : lv_color_hex(0x111C29), 0);
-    lv_obj_set_style_border_color(g_copy_tab, copy_active ? lv_color_hex(0x78C8FF) : lv_color_hex(0x243B53), 0);
     lv_obj_set_style_text_color(g_copy_tab_label, copy_active ? lv_color_hex(0xF4FAFF) : lv_color_hex(0x92A7BE), 0);
-    lv_obj_set_style_bg_color(g_aircon_tab, aircon_active ? lv_color_hex(0x173B2A) : lv_color_hex(0x111C29), 0);
-    lv_obj_set_style_border_color(g_aircon_tab, aircon_active ? lv_color_hex(0x82E3B5) : lv_color_hex(0x243B53), 0);
     lv_obj_set_style_text_color(g_aircon_tab_label, aircon_active ? lv_color_hex(0xF4FAFF) : lv_color_hex(0x92A7BE), 0);
-    lv_obj_set_style_bg_color(g_nec_tab, nec_active ? lv_color_hex(0x3C2A16) : lv_color_hex(0x111C29), 0);
-    lv_obj_set_style_border_color(g_nec_tab, nec_active ? lv_color_hex(0xFFD57A) : lv_color_hex(0x243B53), 0);
     lv_obj_set_style_text_color(g_nec_tab_label, nec_active ? lv_color_hex(0xF4FAFF) : lv_color_hex(0x92A7BE), 0);
+    lv_obj_set_style_bg_opa(g_aircon_tab_cursor, aircon_active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(g_aircon_tab_cursor, lv_color_hex(0x82E3B5), 0);
+    lv_obj_set_style_bg_opa(g_copy_tab_cursor, copy_active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(g_copy_tab_cursor, lv_color_hex(0x78C8FF), 0);
+    lv_obj_set_style_bg_opa(g_nec_tab_cursor, nec_active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(g_nec_tab_cursor, lv_color_hex(0xFFD57A), 0);
 
     std::string left_title = left_title_text();
     std::string left_body = build_left_body();
@@ -1278,13 +1417,33 @@ static void refresh_ui()
     lv_label_set_text(g_left_body, left_body.c_str());
     lv_label_set_text(g_right_title,
                       g_page == AppPage::Aircon ? "Actions" :
-                      (g_page == AppPage::Copy ? "Library" : "Decode"));
+                      (g_page == AppPage::Copy ? "Copy List" : "Decode"));
+
+    if (copy_active)
+    {
+        lv_obj_add_flag(g_left_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(g_right_card, 8, 34);
+        lv_obj_set_size(g_right_card, 304, 112);
+    }
+    else
+    {
+        lv_obj_clear_flag(g_left_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(g_right_card, 104, 34);
+        lv_obj_set_size(g_right_card, 208, 112);
+    }
 
     const int rows = current_row_count();
     const int scroll = page_scroll();
     const int cursor = page_cursor();
     for (int i = 0; i < kVisibleRows; ++i)
     {
+        const bool wide_copy_row = copy_active;
+        lv_obj_set_pos(g_rows[static_cast<std::size_t>(i)], 8, 22 + i * 15);
+        lv_obj_set_size(g_rows[static_cast<std::size_t>(i)], wide_copy_row ? 288 : 192, 15);
+        lv_obj_set_width(g_row_titles[static_cast<std::size_t>(i)], wide_copy_row ? 180 : 90);
+        lv_obj_set_pos(g_row_values[static_cast<std::size_t>(i)], wide_copy_row ? 190 : 100, 2);
+        lv_obj_set_width(g_row_values[static_cast<std::size_t>(i)], wide_copy_row ? 88 : 86);
+
         int row_index = scroll + i;
         if (row_index < rows)
         {
@@ -1315,51 +1474,83 @@ static void refresh_ui()
         }
     }
 
-    lv_label_set_text(g_footer, "4/6 Pg  5/7 Row  8 Edit  Ent Send");
+    if (copy_active)
+    {
+        lv_label_set_text(g_footer, "4/6 Pg  5/7 Row  8 Del  N New  Ent Run");
+    }
+    else
+    {
+        lv_label_set_text(g_footer, "4/6 Pg  5/7 Row  8 Edit  N New  Ent");
+    }
 }
 
 static void on_poll_timer(lv_timer_t *timer)
 {
     (void)timer;
-    if (!g_capture_armed)
+    if (g_receive_mode == ReceiveMode::None)
     {
         return;
     }
 
+    const std::string last_message = g_last_snapshot.message;
+    const bool last_seen = g_last_snapshot.signal_seen;
     g_last_snapshot = g_receiver.poll();
-    if (g_last_snapshot.data_changed && !g_last_snapshot.raw_timings.empty())
+
+    if (g_receive_mode == ReceiveMode::CopyRecord)
     {
-        StoredSignal signal;
-        signal.name = next_signal_name();
-        signal.protocol = g_last_snapshot.protocol;
-        signal.address = g_last_snapshot.address;
-        signal.command = g_last_snapshot.command;
-        signal.data = g_last_snapshot.data;
-        signal.raw_timings = g_last_snapshot.raw_timings;
-        if (signal.protocol.empty())
+        if (g_last_snapshot.data_changed && !g_last_snapshot.raw_timings.empty())
         {
-            signal.protocol = "RAW";
+            StoredSignal *signal = current_signal_mut();
+            if (signal == nullptr)
+            {
+                stop_copy_record("Target item missing");
+            }
+            else
+            {
+                signal->protocol = "RAW";
+                signal->address = 0;
+                signal->command = 0;
+                signal->data.clear();
+                signal->raw_timings = g_last_snapshot.raw_timings;
+                save_signals();
+                save_state();
+                applog::info("UI recorded signal name=" + signal->name +
+                             " protocol=" + signal->protocol +
+                             " raw_ticks=" + std::to_string(signal->raw_timings.size()) +
+                             " raw_preview=" + preview_raw_timings(signal->raw_timings));
+                stop_receiver_mode();
+                set_notice("Recorded", lv_color_hex(0x82E3B5));
+            }
         }
-
-        g_signals.insert(g_signals.begin(), signal);
-        g_selected_signal = 0;
-        g_capture_armed = false;
-        g_receiver.stop();
-        save_signals();
-        save_state();
-        applog::info("UI captured signal name=" + signal.name +
-                     " protocol=" + signal.protocol +
-                     " raw_ticks=" + std::to_string(signal.raw_timings.size()) +
-                     " data=" + irremote::format_hex_bytes(signal.data));
-        set_notice("Captured " + signal.name, lv_color_hex(0x82E3B5));
+        else if (!g_last_snapshot.message.empty() && g_last_snapshot.message != last_message)
+        {
+            applog::debug("UI copy poll message=" + g_last_snapshot.message);
+            set_notice("Listening", lv_color_hex(0xFFD57A));
+        }
     }
-    else if (!g_last_snapshot.message.empty())
+    else if (g_receive_mode == ReceiveMode::NecMonitor)
     {
-        applog::debug("UI capture poll message=" + g_last_snapshot.message);
-        set_notice(g_last_snapshot.message, lv_color_hex(0xFFD57A));
+        if (g_last_snapshot.data_changed)
+        {
+            applog::info("UI live decode update protocol=" + g_last_snapshot.protocol +
+                         " address=" + irremote::format_nec_address(g_last_snapshot.address) +
+                         " command=" + irremote::format_nec_command(g_last_snapshot.command) +
+                         " raw_ticks=" + std::to_string(g_last_snapshot.raw_timings.size()) +
+                         " data=" + irremote::format_hex_bytes(g_last_snapshot.data));
+            set_notice(live_snapshot_has_nec() ? "NEC ready" : "Raw seen",
+                       live_snapshot_has_nec() ? lv_color_hex(0x82E3B5) : lv_color_hex(0xFFD57A));
+        }
+        else if (!g_last_snapshot.message.empty() && g_last_snapshot.message != last_message)
+        {
+            applog::debug("UI nec poll message=" + g_last_snapshot.message);
+        }
     }
 
-    refresh_ui();
+    if (g_page == AppPage::Copy || g_page == AppPage::Nec ||
+        g_last_snapshot.data_changed || g_last_snapshot.signal_seen != last_seen)
+    {
+        refresh_ui();
+    }
 }
 
 static lv_obj_t *make_card(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h)
@@ -1394,7 +1585,23 @@ static void switch_page(int delta)
     const int page_count = 3;
     int index = static_cast<int>(g_page);
     index = (index + delta + page_count) % page_count;
+    if (g_page == AppPage::Copy && is_copy_recording())
+    {
+        stop_copy_record("Recording stopped");
+    }
+    if (g_page == AppPage::Nec && is_nec_monitoring())
+    {
+        stop_receiver_mode();
+    }
     g_page = static_cast<AppPage>(index);
+    if (g_page == AppPage::Nec)
+    {
+        ensure_nec_monitor();
+    }
+    else
+    {
+        set_page_notice();
+    }
     sync_scroll();
     save_state();
     refresh_ui();
@@ -1457,46 +1664,67 @@ void ui_init()
     g_title = make_text(header, 10, 3, "A/C", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_title, &lv_font_montserrat_14, 0);
     g_subtitle = make_text(header, 0, 0, "", lv_color_hex(0x8EA7BE));
-    g_notice = make_text(header, 44, 4, "Ready", lv_color_hex(0x9BE3B1));
-    lv_obj_set_width(g_notice, 132);
+    g_notice = make_text(header, 64, 4, "Ready", lv_color_hex(0x9BE3B1));
+    lv_obj_set_width(g_notice, 104);
     lv_label_set_long_mode(g_notice, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_font(g_notice, &lv_font_montserrat_12, 0);
 
-    g_aircon_tab = make_card(screen, 204, 9, 34, 18);
-    g_aircon_tab_label = make_text(g_aircon_tab, 9, 2, "AC", lv_color_hex(0xF4FAFF));
+    g_aircon_tab = make_card(screen, 176, 8, 26, 18);
+    lv_obj_set_style_bg_opa(g_aircon_tab, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(g_aircon_tab, 0, 0);
+    lv_obj_set_style_radius(g_aircon_tab, 0, 0);
+    g_aircon_tab_label = make_text(g_aircon_tab, 2, 1, "AC", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_aircon_tab_label, &lv_font_montserrat_12, 0);
-    g_copy_tab = make_card(screen, 242, 9, 34, 18);
-    g_copy_tab_label = make_text(g_copy_tab, 6, 2, "CPY", lv_color_hex(0xF4FAFF));
+    g_aircon_tab_cursor = lv_obj_create(g_aircon_tab);
+    lv_obj_remove_style_all(g_aircon_tab_cursor);
+    lv_obj_set_pos(g_aircon_tab_cursor, 1, 15);
+    lv_obj_set_size(g_aircon_tab_cursor, 22, 2);
+    g_copy_tab = make_card(screen, 217, 8, 38, 18);
+    lv_obj_set_style_bg_opa(g_copy_tab, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(g_copy_tab, 0, 0);
+    lv_obj_set_style_radius(g_copy_tab, 0, 0);
+    g_copy_tab_label = make_text(g_copy_tab, 0, 1, "COPY", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_copy_tab_label, &lv_font_montserrat_12, 0);
-    g_nec_tab = make_card(screen, 280, 9, 32, 18);
-    g_nec_tab_label = make_text(g_nec_tab, 5, 2, "NEC", lv_color_hex(0xF4FAFF));
+    g_copy_tab_cursor = lv_obj_create(g_copy_tab);
+    lv_obj_remove_style_all(g_copy_tab_cursor);
+    lv_obj_set_pos(g_copy_tab_cursor, 0, 15);
+    lv_obj_set_size(g_copy_tab_cursor, 34, 2);
+    g_nec_tab = make_card(screen, 269, 8, 30, 18);
+    lv_obj_set_style_bg_opa(g_nec_tab, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(g_nec_tab, 0, 0);
+    lv_obj_set_style_radius(g_nec_tab, 0, 0);
+    g_nec_tab_label = make_text(g_nec_tab, 1, 1, "NEC", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_nec_tab_label, &lv_font_montserrat_12, 0);
+    g_nec_tab_cursor = lv_obj_create(g_nec_tab);
+    lv_obj_remove_style_all(g_nec_tab_cursor);
+    lv_obj_set_pos(g_nec_tab_cursor, 0, 15);
+    lv_obj_set_size(g_nec_tab_cursor, 26, 2);
 
-    lv_obj_t *left_card = make_card(screen, 8, 34, 92, 110);
-    g_left_title = make_text(left_card, 8, 6, "A/C", lv_color_hex(0xF4FAFF));
+    g_left_card = make_card(screen, 8, 34, 92, 112);
+    g_left_title = make_text(g_left_card, 8, 6, "A/C", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_left_title, &lv_font_montserrat_14, 0);
-    g_left_body = make_text(left_card, 8, 22, "", lv_color_hex(0xA9BED2));
+    g_left_body = make_text(g_left_card, 8, 22, "", lv_color_hex(0xA9BED2));
     lv_obj_set_width(g_left_body, 78);
     lv_label_set_long_mode(g_left_body, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_font(g_left_body, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_line_space(g_left_body, 0, 0);
 
-    lv_obj_t *right_card = make_card(screen, 104, 34, 208, 110);
-    g_right_title = make_text(right_card, 8, 6, "Actions", lv_color_hex(0xF4FAFF));
+    g_right_card = make_card(screen, 104, 34, 208, 112);
+    g_right_title = make_text(g_right_card, 8, 6, "Actions", lv_color_hex(0xF4FAFF));
     lv_obj_set_style_text_font(g_right_title, &lv_font_montserrat_14, 0);
     for (int i = 0; i < kVisibleRows; ++i)
     {
-        lv_obj_t *row = make_card(right_card, 8, 22 + i * 14, 192, 14);
+        lv_obj_t *row = make_card(g_right_card, 8, 22 + i * 15, 192, 15);
         lv_obj_set_style_radius(row, 8, 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(0x0F1824), 0);
         lv_obj_set_style_bg_grad_color(row, lv_color_hex(0x132535), 0);
         lv_obj_set_style_border_color(row, lv_color_hex(0x243B53), 0);
         g_rows[static_cast<std::size_t>(i)] = row;
-        g_row_titles[static_cast<std::size_t>(i)] = make_text(row, 7, 1, "", lv_color_hex(0xD6E4F2));
+        g_row_titles[static_cast<std::size_t>(i)] = make_text(row, 7, 2, "", lv_color_hex(0xD6E4F2));
         lv_obj_set_width(g_row_titles[static_cast<std::size_t>(i)], 90);
         lv_label_set_long_mode(g_row_titles[static_cast<std::size_t>(i)], LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_font(g_row_titles[static_cast<std::size_t>(i)], &lv_font_montserrat_12, 0);
-        g_row_values[static_cast<std::size_t>(i)] = make_text(row, 100, 1, "", lv_color_hex(0x8EA7BE));
+        g_row_values[static_cast<std::size_t>(i)] = make_text(row, 100, 2, "", lv_color_hex(0x8EA7BE));
         lv_obj_set_width(g_row_values[static_cast<std::size_t>(i)], 86);
         lv_label_set_long_mode(g_row_values[static_cast<std::size_t>(i)], LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_align(g_row_values[static_cast<std::size_t>(i)], LV_TEXT_ALIGN_RIGHT, 0);
@@ -1508,6 +1736,14 @@ void ui_init()
     lv_obj_set_style_text_font(g_footer, &lv_font_montserrat_12, 0);
 
     lv_timer_create(on_poll_timer, 120, nullptr);
+    if (g_page == AppPage::Nec)
+    {
+        ensure_nec_monitor();
+    }
+    else
+    {
+        set_page_notice();
+    }
     refresh_ui();
 }
 
@@ -1520,6 +1756,14 @@ void ui_handle_key_item(uint32_t key_code, const char *utf8, int key_state)
 {
     if (!is_pressed_state(key_state))
     {
+        return;
+    }
+
+    if (g_page == AppPage::Copy && utf8 != nullptr &&
+        ((utf8[0] == 'n' || utf8[0] == 'N') && utf8[1] == '\0'))
+    {
+        create_copy_item(true);
+        refresh_ui();
         return;
     }
 

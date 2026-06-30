@@ -1,0 +1,120 @@
+from pathlib import Path
+import os
+import platform
+import subprocess
+import shutil
+import sys
+import re
+
+arch = platform.machine()
+version = "v0.0.1"
+static_lib = "static_lib"
+update = False
+
+def write_config(lines):
+    os.makedirs("build/config", exist_ok=True)
+    with open("build/config/config_tmp.mk", "w") as f:
+        for line in lines:
+            f.write(line)
+
+def read_text_if_exists(path):
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+def clear_stale_generated_config(expected_cross_prefix, expected_sdl):
+    global_config_mk = Path("build/config/global_config.mk")
+    global_config_h = Path("build/config/global_config.h")
+    config_text = read_text_if_exists(global_config_mk)
+    if not config_text:
+        return
+
+    has_sdl = "CONFIG_V9_5_LV_USE_SDL=y" in config_text
+    current_prefix_match = re.search(r'^CONFIG_TOOLCHAIN_PREFIX="([^"]*)"$', config_text, re.MULTILINE)
+    current_prefix = current_prefix_match.group(1) if current_prefix_match else ""
+
+    stale = False
+    if expected_sdl != has_sdl:
+        stale = True
+    if expected_cross_prefix is not None and current_prefix != expected_cross_prefix:
+        stale = True
+    if expected_cross_prefix is None and current_prefix:
+        stale = True
+
+    if stale:
+        for path in (global_config_mk, global_config_h):
+            if path.exists():
+                path.unlink()
+
+# export CardputerZero=y for cross-compiling to CardputerZero
+if "CardputerZero" in os.environ:
+    clear_stale_generated_config("aarch64-linux-gnu-", expected_sdl=False)
+    write_config([
+        "CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n",
+        "CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n",
+        "CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n",
+        "CONFIG_V9_5_LV_USE_EVDEV=y\n",
+        'CONFIG_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"\n',
+        f'''CONFIG_TOOLCHAIN_SYSROOT="{os.path.join(sys.path[0], static_lib)}"\n''',
+    ])
+
+# non-aarch64: SDL simulator
+elif arch != "aarch64":
+    clear_stale_generated_config(None, expected_sdl=True)
+    if not os.path.exists("build/config/config_tmp.mk"):
+        lines = ["CONFIG_V9_5_LV_USE_SDL=y\n"]
+        try:
+            sdl2_flags = subprocess.check_output(
+                ["pkg-config", "--cflags", "--libs", "sdl2"], text=True
+            ).strip()
+            lines.append('CONFIG_TOOLCHAIN_FLAGS="{}"\n'.format(sdl2_flags))
+        except Exception:
+            pass
+        write_config(lines)
+
+# aarch64 native: CardputerZero on-device build
+else:
+    clear_stale_generated_config(None, expected_sdl=False)
+    if not os.path.exists("build/config/config_tmp.mk"):
+        write_config([
+            "CONFIG_V9_5_LV_USE_LINUX_FBDEV=y\n",
+            "CONFIG_V9_5_LV_DRAW_SW_ASM_NEON=y\n",
+            "CONFIG_V9_5_LV_USE_DRAW_SW_ASM=1\n",
+            "CONFIG_V9_5_LV_USE_EVDEV=y\n",
+        ])
+
+local_path = Path(os.getcwd())
+sdk_path = local_path.parent.parent / "SDK"
+os.environ["SDK_PATH"] = str(sdk_path)
+os.environ["EXT_COMPONENTS_PATH"] = str(sdk_path.parent / "ext_components")
+
+env = SConscript(
+    str(sdk_path / "tools" / "scons" / "project.py"),
+    variant_dir=os.getcwd(),
+    duplicate=0,
+)
+
+if "CardputerZero" in os.environ:
+    if not os.path.exists(static_lib):
+        update = True
+    else:
+        try:
+            with open(str(Path(static_lib) / "version"), "r") as f:
+                if version != f.read().strip():
+                    update = True
+        except Exception:
+            update = True
+
+    if update:
+        with open(env["PROJECT_TOOL_S"]) as f:
+            exec(f.read())
+        down_url = (
+            "https://github.com/dianjixz/M5CardputerZero-UserDemo/"
+            "releases/download/{}/sdk_bsp.tar.gz"
+        ).format(version)
+        down_path = check_wget_down(down_url, "static_lib_{}.tar.gz".format(version))
+        if os.path.exists(static_lib):
+            shutil.rmtree(static_lib)
+        shutil.move(down_path, static_lib)

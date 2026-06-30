@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=RTC
+Exec=/usr/share/APPLaunch/bin/M5CardputerZero-RTC
+Terminal=false
+Type=Application

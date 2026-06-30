@@ -5,15 +5,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${DIST_DIR:-${ROOT_DIR}/dist}"
 STAGE_DIR="${STAGE_DIR:-${ROOT_DIR}/build/deb-root}"
 
-PACKAGE_NAME="${PACKAGE_NAME:-grovertcclock}"
+PACKAGE_NAME="${PACKAGE_NAME:-rtc}"
 PACKAGE_VERSION="${PACKAGE_VERSION:-0.1.0}"
 PACKAGE_SUFFIX="${PACKAGE_SUFFIX:-m5stack1}"
 DEB_ARCH="${DEB_ARCH:-arm64}"
 MAINTAINER="${MAINTAINER:-M5Stack}"
 
-BIN_NAME="M5CardputerZero-GroveRTCClock"
+BIN_NAME="M5CardputerZero-RTC"
 BIN_SRC="${ROOT_DIR}/dist/${BIN_NAME}"
-DESKTOP_SRC="${ROOT_DIR}/assets/applications/grovertcclock.desktop"
+DESKTOP_SRC="${ROOT_DIR}/assets/applications/rtc.desktop"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
     echo "dpkg-deb not found. Install dpkg-dev first." >&2
@@ -39,7 +39,7 @@ mkdir -p \
     "${DIST_DIR}"
 
 install -Dm755 "${BIN_SRC}" "${STAGE_DIR}/usr/share/APPLaunch/bin/${BIN_NAME}"
-install -Dm644 "${DESKTOP_SRC}" "${STAGE_DIR}/usr/share/APPLaunch/applications/grovertcclock.desktop"
+install -Dm644 "${DESKTOP_SRC}" "${STAGE_DIR}/usr/share/APPLaunch/applications/rtc.desktop"
 
 INSTALLED_SIZE="$(du -sk "${STAGE_DIR}/usr" | awk '{print $1}')"
 cat > "${STAGE_DIR}/DEBIAN/control" <<EOF
@@ -51,8 +51,8 @@ Architecture: ${DEB_ARCH}
 Maintainer: ${MAINTAINER}
 Depends: libc6, libstdc++6, libgcc-s1
 Installed-Size: ${INSTALLED_SIZE}
-Description: RTC-style digital clock for M5CardputerZero APPLaunch
- Digital clock app and APPLaunch desktop entry.
+Description: Adjustable RTC-style digital clock for M5CardputerZero APPLaunch
+ Digital clock app with keypad-based time adjustment and APPLaunch entry.
 EOF
 
 DEB_PATH="${DIST_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_SUFFIX}_${DEB_ARCH}.deb"
